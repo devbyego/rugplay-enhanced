@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Rugplay Enhanced
-// @version      1.0.0
+// @version      1.1.0
 // @icon         https://raw.githubusercontent.com/devbyego/rugplay-enhanced/main/icon.png
-// @description  The #1 Rugplay userscript: price alerts, live feed, risk scoring, bot & volume alerts, P&L, quick search (Ctrl+K), coin notes, rugpull reporter. Uses Rugplay's own API—no third-party data. Zero tracking.
+// @description  The #1 Rugplay userscript: price alerts, watchlist, live feed, risk scoring, bot & volume alerts, P&L, quick search (Ctrl+K), coin notes, rugpull reporter. 100% Rugplay's own API — no third-party servers. Zero tracking.
 // @author       devbyego
 // @match        https://rugplay.com/*
 // @grant        GM_addStyle
@@ -14,8 +14,6 @@
 // @grant        GM_info
 // @grant        unsafeWindow
 // @connect      rugplay-enhanced-api.rugplay-enhanced.workers.dev
-// @connect      api.vaaq.dev
-// @connect      vaaq.dev
 // @connect      rugplay.com
 // @run-at       document-start
 // @downloadURL  https://github.com/devbyego/rugplay-enhanced/releases/latest/download/rugplay-enhanced.user.js
@@ -152,15 +150,57 @@
     wsInterceptor.patch();
 
     const pathname = window.location.pathname;
-    const userMatch = pathname.match(/^\/@([a-zA-Z0-9_.-]+)$/);
-    if (userMatch) { window.location.replace(`https://rugplay.com/user/${userMatch[1]}`); return; }
-    const coinMatch = pathname.match(/^\/\*([A-Z0-9]+)$/i);
-    if (coinMatch) { window.location.replace(`https://rugplay.com/coin/${coinMatch[1].toUpperCase()}`); return; }
+    // urlShortcuts: check stored setting (defaults to true) before doing redirects
+    const _urlShortcutsEnabled = (() => { try { const v = GM_getValue('re:cfg', null); const c = v ? JSON.parse(v) : {}; return c.urlShortcuts !== false; } catch { return true; } })();
+    if (_urlShortcutsEnabled) {
+        const userMatch = pathname.match(/^\/@([a-zA-Z0-9_.-]+)$/);
+        if (userMatch) { window.location.replace(`https://rugplay.com/user/${userMatch[1]}`); return; }
+        const coinMatch = pathname.match(/^\/\*([A-Z0-9]+)$/i);
+        if (coinMatch) { window.location.replace(`https://rugplay.com/coin/${coinMatch[1].toUpperCase()}`); return; }
+    }
 
     const store = {
         get: (k, d = null) => { const v = GM_getValue(k, null); if (v === null) return d; try { return JSON.parse(v); } catch { return v; } },
         set: (k, v) => GM_setValue(k, JSON.stringify(v)),
-        settings: () => ({ adblock: true, notifications: true, stickyPortfolio: false, appearOffline: false, riskScore: true, botWarning: true, volumeSpikes: true, desktopAlerts: false, showPnL: true, compactMode: false, forceDark: false, autoOpenPanel: false, panelTab: 'dashboard', ...store.get('re:cfg', {}) }),
+        settings: () => {
+            const DEFAULTS = {
+                // ── Interface ─────────────────────────────────────────────
+                adblock:true, notifications:true, stickyPortfolio:false, appearOffline:false,
+                showPnL:true, compactMode:false, forceDark:true, autoOpenPanel:false, panelTab:'dashboard',
+                clickableRows:true, sidebarSearch:true, urlShortcuts:true, focusMode:false,
+                hideFooter:false, hideOnlineCount:false, hidePromoBar:false, monoFont:false,
+                largeClickTargets:true, smoothScrolling:true, hideEmptyPortfolio:false,
+                dimInactiveTabs:false, highlightNewCoins:true, showCoinAge:true, showHolderCount:true,
+                hideVerifiedBadge:false, borderlessCards:false, reducedMotion:false, sidebarCompact:false,
+                hideRightSidebar:false, pinFavoriteCoins:false, hideOfflineDM:true,
+                // ── Trading ───────────────────────────────────────────────
+                txCard:true, riskScore:true, riskCard:true, reportedBadge:true, coinNotes:true,
+                showPriceChange:true, showVolume24h:true, showMarketCap:true, warnLowLiquidity:true,
+                holdersWarning:true, showCreatorBadge:true, txTimestamps:true, txHighlightNew:true,
+                txShowAvatar:false, quickBuyButtons:false, confirmTrades:true, showSpread:true,
+                priceDecimals:6, showCandleColors:true, highlightWhaleTrades:true, whaleTxMin:500,
+                showPortfolioPercent:true, showPortfolioCostBasis:false, trackSlippage:false,
+                showFeeEstimate:true, highlightProfitLoss:true, showBidAsk:false,
+                // ── Detection & Alerts ────────────────────────────────────
+                botWarning:true, volumeSpikes:true, desktopAlerts:false, whalePing:true,
+                flashTitle:true, soundAlerts:false, alertOnNewCoin:false, alertOnHolderDrop:false,
+                alertOnPriceDrop:false, priceDropPct:20, alertOnVolumeSpike:true, volumeSpikeUsd:5000,
+                alertOnBotActivity:true, alertOnNewReport:false, alertOnWatchlistTrade:true,
+                alertOnRiskChange:false, alertOnCreatorSell:false,
+                // ── Privacy & Security ────────────────────────────────────
+                hideBalance:false, blurPortfolioValue:false, anonymousMode:false,
+                blockAnalytics:true, stripTrackingParams:true, noReferrer:false,
+                // ── Cosmetic ──────────────────────────────────────────────
+                tradeFeedBuyColor:'#22c55e', tradeFeedSellColor:'#ef4444',
+                accentColor:'default', cardRadius:'xl', feedCompact:false,
+                feedMaxRows:80, timestampFormat:'relative', numberFormat:'abbreviated',
+                // ── Experimental ─────────────────────────────────────────
+                profileHistory:true, profileWatch:true, quickSearch:true,
+                watchlistAlerts:true, autoRefreshFeed:true, preloadCoinData:false,
+                betterScrollbars:true, keyboardShortcuts:true, devMode:false,
+            };
+            return { ...DEFAULTS, ...store.get('re:cfg', {}) };
+        },
         cfg: (k, v) => { const s = store.settings(); s[k] = v; store.set('re:cfg', s); },
         alerts: () => store.get('re:al', []),
         alSet: v => store.set('re:al', v),
@@ -253,46 +293,27 @@
         post: (p, b) => api.req('POST', p, b),
     };
 
-    const vaaqApi = {
-        maxRetries: 4,
-        initialDelay: 800,
-        getJson: (url) => new Promise((resolve, reject) => {
-            let attempt = 0;
-            const run = () => {
-                attempt++;
-                GM_xmlhttpRequest({
-                    method: 'GET',
-                    url,
-                    timeout: 15000,
-                    onload: (r) => {
-                        try {
-                            if (r.status < 200 || r.status >= 300) throw new Error(`http_${r.status}`);
-                            const data = JSON.parse(r.responseText);
-                            resolve(data);
-                        } catch (e) {
-                            if (attempt < vaaqApi.maxRetries) {
-                                const delay = vaaqApi.initialDelay * Math.pow(2, attempt - 1);
-                                setTimeout(run, delay);
-                            } else reject(e);
-                        }
-                    },
-                    onerror: () => {
-                        if (attempt < vaaqApi.maxRetries) {
-                            const delay = vaaqApi.initialDelay * Math.pow(2, attempt - 1);
-                            setTimeout(run, delay);
-                        } else reject(new Error('network'));
-                    },
-                    ontimeout: () => {
-                        if (attempt < vaaqApi.maxRetries) {
-                            const delay = vaaqApi.initialDelay * Math.pow(2, attempt - 1);
-                            setTimeout(run, delay);
-                        } else reject(new Error('timeout'));
-                    },
-                });
-            };
-            run();
-        }),
-        coinTrades: (sym, page = 1, limit = 10) => vaaqApi.getJson(`https://api.vaaq.dev/rugplay/v1/search/?coinSymbol=${encodeURIComponent(sym)}&page=${page}&limit=${limit}`),
+    const rugplayApi = {
+        coinTrades: async (sym, page = 1, limit = 10) => {
+            const r = await fetch(`/api/coin/${sym}/trades?page=${page}&limit=${limit}`, { headers: { Accept: 'application/json' } });
+            if (!r.ok) throw new Error('fetch_failed');
+            return r.json();
+        },
+        userTrades: async (user, page = 1, limit = 15) => {
+            const r = await fetch(`/api/user/${user}/trades?page=${page}&limit=${limit}`, { headers: { Accept: 'application/json' } });
+            if (!r.ok) throw new Error('fetch_failed');
+            return r.json();
+        },
+        search: async (q) => {
+            const r = await fetch(`/api/search?q=${encodeURIComponent(q)}`, { headers: { Accept: 'application/json' } });
+            if (!r.ok) throw new Error('fetch_failed');
+            return r.json();
+        },
+        portfolio: async () => {
+            const r = await fetch('/api/portfolio/summary', { headers: { Accept: 'application/json' } });
+            if (!r.ok) throw new Error('fetch_failed');
+            return r.json();
+        },
     };
 
     class URLWatcher {
@@ -413,17 +434,228 @@
 
     const settingsEngine = {
         applyAll() {
+            const s = store.settings();
             try { notifications.apply(); } catch {}
             try { adBlocker.apply(); } catch {}
             try { portfolioMover.apply(); } catch {}
             try { theme.apply(); } catch {}
             try { visibilitySpoof.apply(); } catch {}
-            try { document.body.classList.toggle('re-compact', !!store.settings().compactMode); } catch {}
-            try { if (store.settings().desktopAlerts && typeof Notification !== 'undefined') Notification.requestPermission(); } catch {}
+            try { modStyles.apply(s); } catch {}
+
+            // ── Body class flags ───────────────────────────────────────────────
+            try { document.body.classList.toggle('re-compact', !!s.compactMode); } catch {}
+            try { document.body.classList.toggle('re-mono', !!s.monoFont); } catch {}
+            try { document.body.classList.toggle('re-focus', !!s.focusMode); } catch {}
+            try { document.body.classList.toggle('re-borderless', !!s.borderlessCards); } catch {}
+            try { document.body.classList.toggle('re-reduced-motion', !!s.reducedMotion); } catch {}
+            try { document.body.classList.toggle('re-large-targets', !!s.largeClickTargets); } catch {}
+            try { document.body.classList.toggle('re-better-scroll', !!s.betterScrollbars); } catch {}
+            try { document.body.classList.toggle('re-blur-portfolio', !!s.blurPortfolioValue); } catch {}
+            try { document.body.classList.toggle('re-hide-balance', !!s.hideBalance); } catch {}
+            try { document.body.classList.toggle('re-sidebar-compact', !!s.sidebarCompact); } catch {}
+
+            // ── Footer / promo bar ─────────────────────────────────────────────
+            try { const f = document.querySelector('footer'); if (f) f.style.display = s.hideFooter ? 'none' : ''; } catch {}
+
+            // ── Risk card removal ──────────────────────────────────────────────
+            try { if (!s.riskScore) document.getElementById(CONFIG.ids.coinRiskCard)?.remove(); } catch {}
+
+            // ── Desktop alert permission ───────────────────────────────────────
+            try { if (s.desktopAlerts && typeof Notification !== 'undefined' && Notification.permission === 'default') Notification.requestPermission(); } catch {}
+
+            // ── Anonymous mode — replace logged-in username display ────────────
             try {
-                if (!store.settings().riskScore) document.getElementById(CONFIG.ids.coinRiskCard)?.remove();
+                if (s.anonymousMode) {
+                    document.querySelectorAll('[data-re-anon]').forEach(el => el.removeAttribute('data-re-anon'));
+                    const me = document.querySelector(CONFIG.selectors.loggedInUserSpan);
+                    if (me && !me.dataset.reAnonOrig) {
+                        me.dataset.reAnonOrig = me.textContent;
+                        me.dataset.reAnon = '1';
+                        me.textContent = '@anon';
+                    }
+                } else {
+                    document.querySelectorAll('[data-re-anon="1"]').forEach(el => {
+                        if (el.dataset.reAnonOrig) { el.textContent = el.dataset.reAnonOrig; delete el.dataset.reAnonOrig; delete el.dataset.reAnon; }
+                    });
+                }
             } catch {}
+
+            // ── Strip tracking params ──────────────────────────────────────────
+            try {
+                if (s.stripTrackingParams) {
+                    const url = new URL(location.href);
+                    const tracked = ['utm_source','utm_medium','utm_campaign','utm_term','utm_content','ref','referrer','fbclid','gclid','msclkid','twclid','mc_cid','mc_eid'];
+                    let changed = false;
+                    tracked.forEach(p => { if (url.searchParams.has(p)) { url.searchParams.delete(p); changed = true; } });
+                    if (changed) history.replaceState({}, '', url.toString());
+                }
+            } catch {}
+
+            // ── noReferrer — patch all external links ──────────────────────────
+            try {
+                if (s.noReferrer) {
+                    document.querySelectorAll('a[href^="http"]:not([data-re-noreferrer])').forEach(a => {
+                        a.dataset.reNoreferrer = '1';
+                        const rel = new Set((a.rel || '').split(' ').filter(Boolean));
+                        rel.add('noreferrer'); rel.add('noopener');
+                        a.rel = [...rel].join(' ');
+                    });
+                }
+            } catch {}
+
+            // ── Dim inactive tabs ──────────────────────────────────────────────
+            try {
+                if (s.dimInactiveTabs) {
+                    if (!document._reDimPatch) {
+                        document._reDimPatch = true;
+                        document.addEventListener('visibilitychange', () => {
+                            if (!store.settings().dimInactiveTabs) return;
+                            document.body.style.opacity = document.hidden ? '0.5' : '';
+                        });
+                    }
+                } else {
+                    document.body.style.opacity = '';
+                }
+            } catch {}
+
+            // ── Flash tab title on alert ───────────────────────────────────────
+            // (handled in alertEngine._chk via flashTitle flag — see below)
+
+            // ── Sound alerts ───────────────────────────────────────────────────
+            // (handled in alertEngine._chk via soundAlerts flag — see below)
+
+            // ── Block analytics ────────────────────────────────────────────────
+            try {
+                if (s.blockAnalytics) {
+                    if (!document.getElementById('re-analytics-block')) {
+                        const el = document.createElement('style');
+                        el.id = 're-analytics-block';
+                        el.textContent = `
+                            script[src*="analytics"],script[src*="gtag"],script[src*="segment"],
+                            script[src*="mixpanel"],script[src*="amplitude"],script[src*="hotjar"],
+                            img[src*="analytics"],img[src*="pixel"],img[src*="track"]
+                            {display:none!important}
+                        `;
+                        document.head.appendChild(el);
+                    }
+                } else {
+                    document.getElementById('re-analytics-block')?.remove();
+                }
+            } catch {}
+
+            // ── autoRefreshFeed ────────────────────────────────────────────────
+            try {
+                if (s.autoRefreshFeed && !settingsEngine._feedRefreshTimer) {
+                    settingsEngine._feedRefreshTimer = setInterval(() => {
+                        if (!store.settings().autoRefreshFeed) { clearInterval(settingsEngine._feedRefreshTimer); settingsEngine._feedRefreshTimer = null; return; }
+                        const sym = utils.getCoinSymbol();
+                        if (sym) document.getElementById(CONFIG.ids.coinTxRefresh)?.click();
+                    }, 15000);
+                } else if (!s.autoRefreshFeed && settingsEngine._feedRefreshTimer) {
+                    clearInterval(settingsEngine._feedRefreshTimer);
+                    settingsEngine._feedRefreshTimer = null;
+                }
+            } catch {}
+
+            // ── showPortfolioPercent ───────────────────────────────────────────
+            try {
+                if (s.showPortfolioPercent) {
+                    const pf = store.portfolio();
+                    const lastTotal = portfolioUpdater.lastTotal;
+                    if (lastTotal && lastTotal > 0) {
+                        document.querySelectorAll('[data-re-pf-sym]:not([data-re-pct])').forEach(row => {
+                            const valEl = row.querySelector('.font-mono');
+                            if (!valEl) return;
+                            const val = parseFloat(valEl.textContent.replace(/[^0-9.]/g,''));
+                            if (!val) return;
+                            const pct = ((val / lastTotal) * 100).toFixed(1);
+                            if (!row.querySelector('.re-pf-pct')) {
+                                const sp = document.createElement('span');
+                                sp.className = 're-pf-pct';
+                                sp.style.cssText = 'font-size:10px;color:#71717a;margin-left:4px';
+                                sp.textContent = pct + '%';
+                                valEl.parentElement?.appendChild(sp);
+                            }
+                            row.dataset.rePct = '1';
+                        });
+                    }
+                }
+            } catch {}
+
+            // ── preloadCoinData ────────────────────────────────────────────────
+            try {
+                if (s.preloadCoinData && !settingsEngine._preloadPatch) {
+                    settingsEngine._preloadPatch = true;
+                    document.addEventListener('mouseover', e => {
+                        if (!store.settings().preloadCoinData) return;
+                        const a = e.target.closest('a[href^="/coin/"]');
+                        if (!a || a.dataset.rePreloaded) return;
+                        a.dataset.rePreloaded = '1';
+                        const m = a.href.match(/\/coin\/([^/?#]+)/);
+                        if (m) fetch(`/api/coin/${m[1]}`, { priority: 'low' }).catch(() => {});
+                    }, { passive: true });
+                }
+            } catch {}
+
+            // ── devMode ────────────────────────────────────────────────────────
+            try {
+                if (s.devMode) {
+                    if (!window._reDevMode) {
+                        window._reDevMode = true;
+                        console.log('%c[Rugplay Enhanced] Dev mode ON — logging WS events', 'color:#22c55e;font-weight:bold');
+                        wsInterceptor.on(d => { if (store.settings().devMode) console.debug('[RE:WS]', d); });
+                    }
+                }
+            } catch {}
+
             try { portfolioUpdater.reload?.(); } catch {}
+        },
+        _feedRefreshTimer: null,
+        _preloadPatch: false,
+    };
+
+    const modStyles = {
+        _el: null,
+        apply(s) {
+            if (!this._el) { this._el = document.createElement('style'); this._el.id = 're-mod-styles'; document.head.appendChild(this._el); }
+            const rules = [];
+
+            // ── Interface ──────────────────────────────────────────────────────
+            if (s.hideFooter) rules.push('footer{display:none!important}');
+            if (s.hidePromoBar) rules.push('[class*="promo"],[class*="banner"],[class*="announcement"]{display:none!important}');
+            if (s.hideRightSidebar) rules.push('aside,[data-slot="right-sidebar"],[data-sidebar="sidebar"]:not(:first-of-type),[class*="right-sidebar"]{display:none!important}');
+            if (s.hideOnlineCount) rules.push('[class*="online-count"],[class*="user-count"],[class*="online_count"],[title*="online"]{display:none!important}');
+            if (s.borderlessCards) rules.push('.bg-card,.rounded-xl,.rounded-2xl,.rounded-lg{border:none!important;box-shadow:none!important}');
+            if (s.reducedMotion) rules.push('*{animation-duration:.01ms!important;transition-duration:.01ms!important;animation-iteration-count:1!important}');
+            if (s.monoFont) rules.push('body,input,textarea,select,button{font-family:ui-monospace,"SF Mono",monospace!important}');
+            if (s.focusMode) rules.push('[data-sidebar],nav,header,footer{opacity:.12!important;transition:opacity .25s!important}[data-sidebar]:hover,nav:hover,header:hover,footer:hover{opacity:1!important}');
+            if (s.sidebarCompact) rules.push('[data-sidebar="menu-item"]{min-height:28px!important;height:28px!important}[data-sidebar="menu-button"]{height:28px!important;font-size:12px!important;padding-top:4px!important;padding-bottom:4px!important}');
+            if (s.blurPortfolioValue) rules.push('.font-mono{filter:blur(5px)!important;transition:filter .2s!important}.font-mono:hover{filter:none!important}');
+            if (s.hideBalance) rules.push('.font-mono{opacity:0!important;user-select:none!important}.font-mono:hover{opacity:1!important}');
+            if (s.largeClickTargets) rules.push('a,button,[role="button"]{min-height:32px!important}');
+            if (s.betterScrollbars) rules.push('::-webkit-scrollbar{width:5px!important;height:5px!important}::-webkit-scrollbar-track{background:transparent!important}::-webkit-scrollbar-thumb{background:hsl(var(--border))!important;border-radius:3px!important}::-webkit-scrollbar-thumb:hover{background:hsl(var(--muted-foreground))!important}');
+            if (s.smoothScrolling) rules.push('html{scroll-behavior:smooth!important}');
+            if (s.highlightNewCoins) rules.push('[data-new-coin]{border-left:3px solid #22c55e!important}');
+            if (s.compactMode) rules.push('.space-y-4{gap:8px!important}.space-y-6{gap:12px!important}.p-4{padding:8px!important}.p-6{padding:12px!important}.py-6{padding-top:10px!important;padding-bottom:10px!important}.gap-4{gap:8px!important}.gap-6{gap:12px!important}');
+            if (s.dimInactiveTabs) rules.push('');  // applied via visibility event — handled in JS below
+            if (s.hideOfflineDM) rules.push('[class*="online-indicator"],[class*="online_dot"],[data-status="online"] [class*="dot"],[class*="presence"]{display:none!important}');
+            if (s.hideVerifiedBadge) rules.push('[class*="verified"],[class*="badge-verified"]{display:none!important}');
+
+            // ── Trading / Display ──────────────────────────────────────────────
+            if (s.feedCompact) rules.push('.xp-feed-row{padding-top:4px!important;padding-bottom:4px!important}.xp-feed-rows{max-height:420px!important}');
+            if (s.highlightBuys) rules.push('.xp-feed-row.buy{background:rgba(34,197,94,.03)!important}');
+            if (s.highlightSells) rules.push('.xp-feed-row.sell{background:rgba(239,68,68,.03)!important}');
+            if (s.highlightWhaleTrades) rules.push('[data-whale="1"]{outline:1px solid #f59e0b!important;outline-offset:-1px!important}');
+            if (s.showCandleColors) rules.push('[class*="candle"][class*="up"],[class*="bull"]{color:#22c55e!important}[class*="candle"][class*="down"],[class*="bear"]{color:#ef4444!important}');
+            if (s.showMarketCap) rules.push('[data-re-mcap-hidden]{display:block!important;visibility:visible!important}');
+
+            // ── Privacy ────────────────────────────────────────────────────────
+            if (s.noReferrer) rules.push('a[href^="http"]{rel:noreferrer!important}');  // limited via CSS, fully applied in JS
+
+            const accent = s.accentColor && s.accentColor !== 'default' ? s.accentColor : null;
+            if (accent) rules.push(`:root{--primary:${accent}}`);
+
+            this._el.textContent = rules.join('\n');
         },
     };
 
@@ -457,8 +689,8 @@
         async reload() {
             if (this.reloading) return; this.reloading = true;
             try {
-                const r = await fetch('/api/portfolio/summary', { headers: { Accept: 'application/json' } });
-                if (r.ok) { const d = await r.json(); this.update(d); }
+                const d = await rugplayApi.portfolio();
+                this.update(d);
             } catch {} finally { this.reloading = false; }
         },
         update(data) {
@@ -498,6 +730,8 @@
     };
 
     const alertEngine = {
+        _flashTimer: null,
+        _origTitle: null,
         init() { wsInterceptor.on(d => { const sym = ((d.data?.coinSymbol || d.data?.symbol) || '').toUpperCase(); const px = parseFloat(d.data?.price || d.data?.currentPrice || 0); if (sym && px) this._chk(sym, px); }); },
         _chk(sym, px) {
             const al = store.alerts(); let ch = false;
@@ -508,8 +742,32 @@
                 a.done = true; a.hitAt = Date.now(); ch = true;
                 notifier.show({ title: '🔔 Price Alert', description: `${sym} hit ${utils.usd(px)} — target: ${a.dir} ${utils.usd(a.px)}`, type: a.dir === 'above' ? 'success' : 'warning', duration: 0, actions: [{ label: 'View Coin', onClick: () => { location.href = `/coin/${sym}`; } }, { label: 'Dismiss', onClick: () => {} }] });
                 if (store.settings().desktopAlerts && typeof GM_notification !== 'undefined' && Notification.permission === 'granted') GM_notification({ title: 'Rugplay Enhanced', text: `${sym} hit ${utils.usd(px)}`, timeout: 8000 });
+                if (store.settings().flashTitle) this._flash(`🔔 ${sym} ALERT`);
+                if (store.settings().soundAlerts) this._beep(880, 0.15, 0.3);
             });
             if (ch) store.alSet(al);
+        },
+        _flash(msg) {
+            if (this._flashTimer) { clearInterval(this._flashTimer); this._flashTimer = null; document.title = this._origTitle || document.title; }
+            this._origTitle = document.title;
+            let on = true;
+            this._flashTimer = setInterval(() => {
+                document.title = on ? msg : this._origTitle;
+                on = !on;
+            }, 700);
+            setTimeout(() => { if (this._flashTimer) { clearInterval(this._flashTimer); this._flashTimer = null; document.title = this._origTitle; } }, 10000);
+        },
+        _beep(freq = 660, vol = 0.1, dur = 0.25) {
+            try {
+                const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.connect(gain); gain.connect(ctx.destination);
+                osc.type = 'sine'; osc.frequency.value = freq;
+                gain.gain.setValueAtTime(vol, ctx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + dur);
+                osc.start(ctx.currentTime); osc.stop(ctx.currentTime + dur);
+            } catch {}
         },
         add(sym, px, dir) { const al = store.alerts(); al.push({ id: utils.uid(), sym: sym.toUpperCase(), px: parseFloat(px), dir, done: false, at: Date.now() }); store.alSet(al); notifier.ok(`Alert set: ${sym} ${dir} ${utils.usd(px)}`); },
         del: id => store.alSet(store.alerts().filter(a => a.id !== id)),
@@ -517,14 +775,48 @@
 
     const volumeDetector = {
         hist: {},
-        init() { wsInterceptor.on(d => { if (!['live-trade', 'all-trades'].includes(d.type)) return; const sym = (d.data?.coinSymbol || '').toUpperCase(); const v = parseFloat(d.data?.totalValue || 0); if (!sym || !v) return; if (!this.hist[sym]) this.hist[sym] = { t: [], last: 0 }; const h = this.hist[sym]; h.t.push({ v, ts: Date.now() }); h.t = h.t.filter(x => Date.now() - x.ts < 60000); const tot = h.t.reduce((s, x) => s + x.v, 0); if (!store.settings().volumeSpikes) return; if (tot > 5000 && Date.now() - h.last > 30000) { h.last = Date.now(); notifier.show({ title: '📈 Volume Spike', description: `${sym} — ${utils.usd(tot)} in the last 60s`, type: 'warning', duration: 8000, actions: [{ label: 'View', onClick: () => { location.href = `/coin/${sym}`; } }] }); } }); },
+        init() {
+            wsInterceptor.on(d => {
+                if (!['live-trade', 'all-trades'].includes(d.type)) return;
+                const sym = (d.data?.coinSymbol || '').toUpperCase();
+                const v = parseFloat(d.data?.totalValue || 0);
+                if (!sym || !v) return;
+                if (!this.hist[sym]) this.hist[sym] = { t: [], last: 0 };
+                const h = this.hist[sym];
+                h.t.push({ v, ts: Date.now() });
+                h.t = h.t.filter(x => Date.now() - x.ts < 60000);
+                const tot = h.t.reduce((s, x) => s + x.v, 0);
+                const s = store.settings();
+                if (!s.volumeSpikes && !s.alertOnVolumeSpike) return;
+                const threshold = s.volumeSpikeUsd || 5000;
+                if (tot > threshold && Date.now() - h.last > 30000) {
+                    h.last = Date.now();
+                    notifier.show({ title: '📈 Volume Spike', description: `${sym} — ${utils.usd(tot)} in the last 60s`, type: 'warning', duration: 8000, actions: [{ label: 'View', onClick: () => { location.href = `/coin/${sym}`; } }] });
+                    if (s.soundAlerts) alertEngine._beep(440, 0.08, 0.2);
+                }
+            });
+        },
         get: sym => (volumeDetector.hist[sym]?.t || []).reduce((s, x) => s + x.v, 0),
     };
 
     const botDetector = {
         tr: {},
         init() { wsInterceptor.on(d => { if (!['live-trade', 'all-trades'].includes(d.type)) return; const sym = (d.data?.coinSymbol || '').toUpperCase(); const usr = d.data?.username; if (!sym || !usr) return; if (!this.tr[sym]) this.tr[sym] = []; this.tr[sym].push({ usr, v: parseFloat(d.data?.totalValue || 0), type: (d.data?.type || '').toUpperCase(), ts: Date.now() }); this.tr[sym] = this.tr[sym].filter(x => Date.now() - x.ts < 120000); this._ana(sym); }); },
-        _ana(sym) { const tr = this.tr[sym]; if (!tr || tr.length < 6 || !store.settings().botWarning) return; const uc = {}; tr.forEach(t => { uc[t.usr] = (uc[t.usr] || 0) + 1; }); const iv = []; for (let i = 1; i < tr.length; i++) iv.push(tr[i].ts - tr[i - 1].ts); const avg = iv.reduce((a, b) => a + b, 0) / iv.length; const vr = iv.reduce((a, b) => a + (b - avg) ** 2, 0) / iv.length; if ((vr < 5000 && avg < 3000) || Object.values(uc).some(c => c >= 4)) { const k = `re_bw_${sym}`; if (GM_getValue(k, 0) > Date.now() - 60000) return; GM_setValue(k, Date.now()); notifier.show({ title: '🤖 Bot Activity', description: `${sym} — suspicious patterns detected in the last 2 minutes`, type: 'warning', duration: 10000, actions: [{ label: 'View Coin', onClick: () => { location.href = `/coin/${sym}`; } }] }); } },
+        _ana(sym) {
+            const tr = this.tr[sym];
+            if (!tr || tr.length < 6) return;
+            const s = store.settings();
+            if (!s.botWarning && !s.alertOnBotActivity) return;
+            const uc = {}; tr.forEach(t => { uc[t.usr] = (uc[t.usr] || 0) + 1; });
+            const iv = []; for (let i = 1; i < tr.length; i++) iv.push(tr[i].ts - tr[i - 1].ts);
+            const avg = iv.reduce((a, b) => a + b, 0) / iv.length;
+            const vr = iv.reduce((a, b) => a + (b - avg) ** 2, 0) / iv.length;
+            if ((vr < 5000 && avg < 3000) || Object.values(uc).some(c => c >= 4)) {
+                const k = `re_bw_${sym}`; if (GM_getValue(k, 0) > Date.now() - 60000) return; GM_setValue(k, Date.now());
+                notifier.show({ title: '🤖 Bot Activity', description: `${sym} — suspicious trading patterns detected`, type: 'warning', duration: 10000, actions: [{ label: 'View Coin', onClick: () => { location.href = `/coin/${sym}`; } }] });
+                if (s.soundAlerts) alertEngine._beep(330, 0.08, 0.3);
+            }
+        },
         trades: sym => botDetector.tr[sym] || [],
     };
 
@@ -591,14 +883,69 @@
         tsTimer: null,
         paused: false,
         _renderT: 0,
+        _seenCoins: new Set(),
         init() {
             wsInterceptor.on(d => {
                 if (!['live-trade', 'all-trades'].includes(d.type)) return;
                 const t = d.data; if (!t) return;
+                const sym = (t.coinSymbol || '').toUpperCase();
+                const usr = t.username || '?';
+                const type = (t.type || 'BUY').toUpperCase();
+                const val = parseFloat(t.totalValue || 0);
+                const px = parseFloat(t.price || 0);
+                const ts = t.timestamp || Date.now();
+                const isWhale = val >= (store.settings().whaleTxMin || 500);
+
                 portfolioUpdater.trigger();
-                this.trades.unshift({ sym: (t.coinSymbol || '').toUpperCase(), usr: t.username || '?', type: (t.type || 'BUY').toUpperCase(), val: parseFloat(t.totalValue || 0), px: parseFloat(t.price || 0), ts: t.timestamp || Date.now() });
+                this.trades.unshift({ sym, usr, type, val, px, ts, isWhale });
                 this.trades = this.trades.slice(0, 500);
                 if (this.open && !this.paused) this._renderThrottled();
+
+                const s = store.settings();
+
+                // ── Watchlist trade alert ──────────────────────────────────────
+                if ((s.alertOnWatchlistTrade || s.watchlistAlerts) && watchlist.has(sym)) {
+                    const k = `re_wla_${sym}`; if (GM_getValue(k, 0) < Date.now() - 10000) {
+                        GM_setValue(k, Date.now());
+                        notifier.show({ title: `👁 Watchlist: ${sym}`, description: `${usr} ${type === 'SELL' ? 'sold' : 'bought'} ${utils.usd(val)}`, type: type === 'SELL' ? 'warning' : 'success', duration: 6000, actions: [{ label: 'View', onClick: () => { location.href = `/coin/${sym}`; } }] });
+                        if (s.soundAlerts) alertEngine._beep(type === 'SELL' ? 280 : 550, 0.07, 0.2);
+                    }
+                }
+
+                // ── Whale ping ─────────────────────────────────────────────────
+                if (s.whalePing && isWhale) {
+                    const k = `re_wp_${sym}`; if (GM_getValue(k, 0) < Date.now() - 15000) {
+                        GM_setValue(k, Date.now());
+                        notifier.show({ title: `🐋 Whale Trade`, description: `${sym} — ${usr} ${type} ${utils.usd(val)}`, type: 'warning', duration: 7000, actions: [{ label: 'View', onClick: () => { location.href = `/coin/${sym}`; } }] });
+                        if (s.soundAlerts) alertEngine._beep(220, 0.1, 0.4);
+                    }
+                }
+
+                // ── New coin alert ─────────────────────────────────────────────
+                if (s.alertOnNewCoin && !this._seenCoins.has(sym)) {
+                    this._seenCoins.add(sym);
+                    if (this._seenCoins.size > 1) { // skip first batch on load
+                        notifier.show({ title: `🆕 New Coin: ${sym}`, description: `First trade seen — ${usr} ${type} ${utils.usd(val)}`, type: 'info', duration: 8000, actions: [{ label: 'View', onClick: () => { location.href = `/coin/${sym}`; } }] });
+                        if (s.soundAlerts) alertEngine._beep(660, 0.08, 0.2);
+                    }
+                }
+
+                // ── Creator sell alert ─────────────────────────────────────────
+                if (s.alertOnCreatorSell && type === 'SELL' && utils.isCoinPage()) {
+                    const curSym = utils.getCoinSymbol();
+                    if (curSym === sym) {
+                        riskScorer.score(sym).then(sc => {
+                            if (sc?.creatorUsername && sc.creatorUsername.toLowerCase() === usr.toLowerCase()) {
+                                const k = `re_cs_${sym}`; if (GM_getValue(k, 0) < Date.now() - 30000) {
+                                    GM_setValue(k, Date.now());
+                                    notifier.show({ title: `🚨 Creator Selling!`, description: `${sym} creator (${usr}) just SOLD ${utils.usd(val)} — possible rugpull`, type: 'error', duration: 0, actions: [{ label: 'View Coin', onClick: () => { location.href = `/coin/${sym}`; } }, { label: 'Dismiss', onClick: () => {} }] });
+                                    if (s.soundAlerts) { alertEngine._beep(200, 0.15, 0.5); setTimeout(() => alertEngine._beep(150, 0.15, 0.5), 300); }
+                                    if (s.flashTitle) alertEngine._flash(`🚨 ${sym} CREATOR SELLING`);
+                                }
+                            }
+                        }).catch(() => {});
+                    }
+                }
             });
         },
         _renderThrottled() {
@@ -607,6 +954,7 @@
             this._renderT = now;
             this.render();
             dashboard.render();
+            ['re-stat-trades','xp-stat-trades'].forEach(id=>{const el=document.getElementById(id);if(el)el.textContent=this.trades.length;});
         },
         render() {
             const body = document.getElementById('re-feed-rows'); if (!body) return;
@@ -620,10 +968,10 @@
                 if (!f) return true;
                 return t.sym.includes(fU) || (t.usr || '').toLowerCase().includes(f.toLowerCase());
             });
-            if (!shown.length) { body.innerHTML = '<div class="re-empty">Waiting for live trades...</div>'; return; }
-            body.innerHTML = shown.slice(0, 80).map(t => `<a href="/coin/${t.sym}" class="re-feed-row ${t.type === 'SELL' ? 'sell' : 'buy'}"><span class="re-fd-b ${t.type === 'SELL' ? 'sell' : 'buy'}">${t.type}</span><span class="re-fd-s">${t.sym}</span><span class="re-fd-u">${t.usr}</span><span class="re-fd-v">${utils.usd(t.val)}</span><span class="re-fd-t" data-ts="${t.ts}">${utils.ago(t.ts)}</span></a>`).join('');
+            if (!shown.length) { body.innerHTML = '<div class="xp-empty">Waiting for live trades…</div>'; return; }
+            body.innerHTML = shown.slice(0, 80).map(t => `<a href="/coin/${t.sym}" class="xp-feed-row ${t.type==='SELL'?'sell':'buy'}"><span class="${t.type==='SELL'?'xp-b-sell':'xp-b-buy'}">${t.type}</span><span class="xp-f-sym">${t.sym}</span><span class="xp-f-usr">${t.usr}</span><span class="xp-f-val">${utils.usd(t.val)}</span><span class="xp-f-ts" data-ts="${t.ts}">${utils.ago(t.ts)}</span></a>`).join('');
         },
-        startTsTimer() { this.stopTsTimer(); this.tsTimer = setInterval(() => { document.querySelectorAll('.re-fd-t[data-ts]').forEach(el => { el.textContent = utils.ago(+el.dataset.ts); }); }, 1000); },
+        startTsTimer() { this.stopTsTimer(); this.tsTimer = setInterval(() => { document.querySelectorAll('.re-fd-t[data-ts],.xp-f-ts[data-ts]').forEach(el => { el.textContent = utils.ago(+el.dataset.ts); }); }, 1000); },
         stopTsTimer() { if (this.tsTimer) { clearInterval(this.tsTimer); this.tsTimer = null; } },
     };
 
@@ -651,27 +999,25 @@
             }
             const hot = Object.values(by).sort((a, b) => b.vol - a.vol).slice(0, 10);
             hotEl.innerHTML = hot.length
-                ? hot.map(h => `<a class="re-mini-row" href="/coin/${h.sym}"><span class="re-mini-sym">${h.sym}</span><span class="re-mini-sub">${h.n} trades · ${utils.usd(h.vol)} · ${utils.ago(h.last)}</span><span class="re-mini-badge ${h.buy >= h.sell ? 'buy' : 'sell'}">${h.buy}/${h.sell}</span></a>`).join('')
-                : `<div class="re-empty">No data yet.</div>`;
+                ? hot.map(h=>`<a class="xp-mini-row" href="/coin/${h.sym}"><span class="xp-mini-sym">${h.sym}</span><span class="xp-mini-sub">${h.n} trades · ${utils.usd(h.vol)} · ${utils.ago(h.last)}</span><span class="${h.buy>=h.sell?'xp-t-buy':'xp-t-sell'}">${h.buy}/${h.sell}</span></a>`).join('')
+                :'<div class="xp-empty">No data yet.</div>';
 
             const minWhale = parseFloat(document.getElementById('re-whale-min')?.value || '250') || 250;
             const whales = trades.filter(t => (+t.val || 0) >= minWhale).slice(0, 25).sort((a, b) => (+b.val || 0) - (+a.val || 0)).slice(0, 12);
             whaleEl.innerHTML = whales.length
-                ? whales.map(t => `<a class="re-mini-row" href="/coin/${t.sym}"><span class="re-mini-sym">${t.sym}</span><span class="re-mini-sub">${t.usr} · ${t.type} · ${utils.usd(t.val)} · ${utils.ago(t.ts)}</span><span class="re-mini-badge ${t.type === 'SELL' ? 'sell' : 'buy'}">${t.type}</span></a>`).join('')
-                : `<div class="re-empty">No whales over ${utils.usd(minWhale)}.</div>`;
+                ? whales.map(t=>`<a class="xp-mini-row" href="/coin/${t.sym}"><span class="xp-mini-sym">${t.sym}</span><span class="xp-mini-sub">${t.usr} · ${t.type} · ${utils.usd(t.val)} · ${utils.ago(t.ts)}</span><span class="${t.type==='SELL'?'xp-t-sell':'xp-t-buy'}">${t.type}</span></a>`).join('')
+                :`<div class="xp-empty">No whales over ${utils.usd(minWhale)}.</div>`;
 
             const totalVol = trades.reduce((s, t) => s + (+t.val || 0), 0);
             const buys = trades.filter(t => t.type === 'BUY').length;
             const sells = trades.filter(t => t.type === 'SELL').length;
             const avg = trades.length ? totalVol / trades.length : 0;
             statEl.innerHTML = `
-                <div class="re-stat-grid">
-                    <div class="re-stat"><div class="re-stat-k">Window</div><div class="re-stat-v">${Math.round(sinceMs / 60000)}m</div></div>
-                    <div class="re-stat"><div class="re-stat-k">Trades</div><div class="re-stat-v">${trades.length}</div></div>
-                    <div class="re-stat"><div class="re-stat-k">Volume</div><div class="re-stat-v">${utils.usd(totalVol)}</div></div>
-                    <div class="re-stat"><div class="re-stat-k">Avg</div><div class="re-stat-v">${utils.usd(avg)}</div></div>
-                    <div class="re-stat"><div class="re-stat-k">Buys/Sells</div><div class="re-stat-v">${buys}/${sells}</div></div>
-                </div>
+                <div class="xp-agg-cell"><div class="xp-agg-v">${Math.round(sinceMs/60000)}m</div><div class="xp-agg-k">Window</div></div>
+                <div class="xp-agg-cell"><div class="xp-agg-v">${trades.length}</div><div class="xp-agg-k">Trades</div></div>
+                <div class="xp-agg-cell"><div class="xp-agg-v">${utils.usd(totalVol)}</div><div class="xp-agg-k">Volume</div></div>
+                <div class="xp-agg-cell"><div class="xp-agg-v">${utils.usd(avg)}</div><div class="xp-agg-k">Avg</div></div>
+                <div class="xp-agg-cell"><div class="xp-agg-v">${buys}/${sells}</div><div class="xp-agg-k">B/S</div></div>
             `;
         },
     };
@@ -680,6 +1026,7 @@
         cache: null, cacheTs: 0,
         async load() { if (this.cache && Date.now() - this.cacheTs < 300000) return this.cache; try { const r = await api.get('/v1/tags'); if (r.status === 'success') { this.cache = r.data; this.cacheTs = Date.now(); return this.cache; } } catch {} return {}; },
         async applyTags() {
+            if (!store.settings().showCreatorBadge) return;
             const tags = await this.load(); if (!tags || !Object.keys(tags).length) return;
             if (utils.isUserPage()) { const u = utils.getUsernameFromPage(); if (u) { const d = tags[u.toLowerCase()]; const el = document.querySelector('p.text-muted-foreground.text-lg'); if (el && d && !el.querySelector('.re-tag')) { const t = document.createElement('span'); t.className = 're-tag'; t.textContent = d.label || d.tag; t.style.background = d.style?.bg || '#6366f1'; t.style.color = d.style?.text || '#fff'; el.appendChild(t); } } }
             if (utils.isCoinPage()) { document.querySelectorAll('.border-b:not([data-re-tag])').forEach(el => { const sp = el.querySelector('button span.truncate'); if (!sp) return; const u = sp.textContent.replace('@', '').trim().toLowerCase(); const d = tags[u]; if (d && !el.querySelector('.re-tag')) { const t = document.createElement('span'); t.className = 're-tag'; t.textContent = d.label || d.tag; t.style.background = d.style?.bg || '#6366f1'; t.style.color = d.style?.text || '#fff'; sp.parentElement?.appendChild(t); } el.setAttribute('data-re-tag', '1'); }); }
@@ -702,6 +1049,7 @@
     const tableEnhancer = {
         enhance() {
             if (!utils.isUserPage()) return;
+            if (!store.settings().clickableRows) return;
             const tbody = utils.findElement(CONFIG.selectors.tableSelectors); if (!tbody) return;
             tbody.querySelectorAll('tr:not([data-re-click])').forEach(row => {
                 const img = row.querySelector('img[alt]'); if (!img) return;
@@ -751,8 +1099,7 @@
                 if (q.length < 2) { res.innerHTML = '<div class="re-empty">Type at least 2 characters...</div>'; return; }
                 res.innerHTML = `<div class="re-empty">${ICONS.loading} Searching...</div>`;
                 try {
-                    const r = await fetch(`/api/search?q=${encodeURIComponent(q)}`); if (!r.ok) throw new Error();
-                    const d = await r.json();
+                    const d = await rugplayApi.search(q);
                     const coins = d.coins || d.results || []; const users = d.users || [];
                     if (!coins.length && !users.length) { res.innerHTML = '<div class="re-empty">No results found</div>'; return; }
                     res.innerHTML = [
@@ -813,7 +1160,153 @@
         async init() {
             if (!utils.isCoinPage()) { this.stopTsTimer(); return; }
             const sym = utils.getCoinSymbol(); if (!sym) return;
-            await Promise.all([this._riskCard(sym), this._reportedBadge(sym), this._txCard(sym), this._noteCard(sym)]);
+            const s = store.settings();
+            const tasks = [];
+            tasks.push(this._watchBtn(sym));
+            if (s.riskScore && s.riskCard) tasks.push(this._riskCard(sym));
+            if (s.reportedBadge) tasks.push(this._reportedBadge(sym));
+            if (s.txCard) tasks.push(this._txCard(sym));
+            if (s.coinNotes) tasks.push(this._noteCard(sym));
+            tasks.push(this._coinPageMods(sym));
+            await Promise.all(tasks);
+        },
+        async _coinPageMods(sym) {
+            // Inject coin-page data enhancements that don't need their own card
+            await utils.sleep(1200);
+            if (!utils.isCoinPage() || utils.getCoinSymbol() !== sym) return;
+            const s = store.settings();
+            try {
+                // Fetch coin data for age/holders/mcap display
+                const r = await fetch(`/coin/${sym}/__data.json?x-sveltekit-invalidated=11`);
+                if (!r.ok) return;
+                const d = await r.json();
+                const da = d?.nodes?.[1]?.data; if (!Array.isArray(da)) return;
+                const ci = da[0]?.coin; if (ci === undefined) return;
+                const coin = da[ci]; if (!coin || typeof coin !== 'object') return;
+                const getVal = idx => (idx != null && da[idx] !== undefined ? da[idx] : null);
+                const holders = getVal(coin.holderCount) ?? 0;
+                const mcap = getVal(coin.marketCap) ?? 0;
+                const vol24 = getVal(coin.volume24h) ?? getVal(coin.dailyVolume) ?? 0;
+                const change24 = getVal(coin.priceChange24h) ?? getVal(coin.change24h) ?? null;
+                const created = getVal(coin.createdAt) ?? null;
+
+                // Find a good anchor — the main coin header area
+                const h1 = document.querySelector('main h1, main .text-2xl.font-bold, main .text-3xl.font-bold');
+                if (!h1) return;
+
+                // ── showCoinAge ───────────────────────────────────────────────
+                if (s.showCoinAge && created && !document.getElementById('re-coin-age')) {
+                    const ageH = (Date.now() - new Date(created).getTime()) / 3600000;
+                    const ageStr = ageH < 1 ? `${Math.round(ageH * 60)}m old` : ageH < 24 ? `${Math.round(ageH)}h old` : `${Math.round(ageH / 24)}d old`;
+                    const el = document.createElement('span');
+                    el.id = 're-coin-age';
+                    el.style.cssText = 'font-size:11px;font-weight:600;padding:2px 8px;border-radius:4px;background:rgba(255,255,255,.08);color:#a1a1aa;margin-left:8px;vertical-align:middle';
+                    el.textContent = ageStr;
+                    if (ageH < 1) el.style.background = 'rgba(239,68,68,.12)', el.style.color = '#ef4444';
+                    else if (ageH < 6) el.style.background = 'rgba(245,158,11,.12)', el.style.color = '#f59e0b';
+                    h1.appendChild(el);
+                }
+
+                // Find the stats area (near market cap)
+                const statsArea = document.querySelector('main .grid, main .flex.flex-wrap') || h1.parentElement;
+
+                // ── showHolderCount ───────────────────────────────────────────
+                if (s.showHolderCount && holders && !document.getElementById('re-coin-holders')) {
+                    const el = document.createElement('div');
+                    el.id = 're-coin-holders';
+                    el.style.cssText = 'font-size:12px;font-weight:600;color:#a1a1aa;display:inline-flex;align-items:center;gap:5px;margin-right:12px';
+                    el.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg> ${holders.toLocaleString()} holders`;
+                    statsArea?.prepend(el);
+                }
+
+                // ── holdersWarning ────────────────────────────────────────────
+                if (s.holdersWarning && holders < 10 && !document.getElementById('re-holders-warn')) {
+                    const el = document.createElement('div');
+                    el.id = 're-holders-warn';
+                    el.style.cssText = 'margin-top:6px;padding:6px 10px;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.25);border-radius:6px;font-size:11px;font-weight:600;color:#ef4444;display:flex;align-items:center;gap:6px';
+                    el.innerHTML = `⚠ Only ${holders} holder${holders !== 1 ? 's' : ''} — extreme concentration risk`;
+                    h1.parentElement?.insertAdjacentElement('afterend', el);
+                }
+
+                // ── warnLowLiquidity ──────────────────────────────────────────
+                if (s.warnLowLiquidity && mcap < 500 && !document.getElementById('re-liquidity-warn')) {
+                    const el = document.createElement('div');
+                    el.id = 're-liquidity-warn';
+                    el.style.cssText = 'margin-top:6px;padding:6px 10px;background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.25);border-radius:6px;font-size:11px;font-weight:600;color:#f59e0b;display:flex;align-items:center;gap:6px';
+                    el.innerHTML = `⚠ Very low market cap (${utils.usd(mcap)}) — high rugpull risk`;
+                    document.getElementById('re-holders-warn')?.insertAdjacentElement('afterend', el)
+                        || h1.parentElement?.insertAdjacentElement('afterend', el);
+                }
+
+                // ── showPriceChange ───────────────────────────────────────────
+                if (s.showPriceChange && change24 !== null && !document.getElementById('re-price-change')) {
+                    const pct = parseFloat(change24);
+                    const el = document.createElement('span');
+                    el.id = 're-price-change';
+                    const color = pct >= 0 ? '#22c55e' : '#ef4444';
+                    el.style.cssText = `font-size:12px;font-weight:700;padding:2px 7px;border-radius:4px;background:${color}18;color:${color};margin-left:6px;vertical-align:middle`;
+                    el.textContent = `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}% 24h`;
+                    h1.appendChild(el);
+                }
+
+                // ── showVolume24h ─────────────────────────────────────────────
+                if (s.showVolume24h && vol24 && !document.getElementById('re-vol24')) {
+                    const el = document.createElement('span');
+                    el.id = 're-vol24';
+                    el.style.cssText = 'font-size:11px;font-weight:600;color:#a1a1aa;margin-left:8px';
+                    el.textContent = `Vol: ${utils.usd(vol24)}`;
+                    statsArea?.appendChild(el);
+                }
+
+                // ── alertOnPriceDrop monitoring ───────────────────────────────
+                if (s.alertOnPriceDrop) {
+                    const curPx = getVal(coin.currentPrice) ?? getVal(coin.price) ?? 0;
+                    if (curPx && !this._priceDropRef) {
+                        this._priceDropRef = { sym, px: curPx, ts: Date.now() };
+                        // Monitored via WS in liveFeed — set up once
+                        if (!this._priceDropWired) {
+                            this._priceDropWired = true;
+                            wsInterceptor.on(d => {
+                                if (!store.settings().alertOnPriceDrop || !this._priceDropRef) return;
+                                const wsym = (d.data?.coinSymbol || '').toUpperCase();
+                                if (wsym !== this._priceDropRef.sym) return;
+                                const wpx = parseFloat(d.data?.price || d.data?.currentPrice || 0);
+                                if (!wpx) return;
+                                const drop = ((this._priceDropRef.px - wpx) / this._priceDropRef.px) * 100;
+                                const threshold = store.settings().priceDropPct || 20;
+                                if (drop >= threshold && Date.now() - this._priceDropRef.ts > 30000) {
+                                    this._priceDropRef.ts = Date.now();
+                                    notifier.show({ title: `📉 Price Drop: ${wsym}`, description: `Down ${drop.toFixed(1)}% — was ${utils.usd(this._priceDropRef.px)}, now ${utils.usd(wpx)}`, type: 'error', duration: 10000, actions: [{ label: 'View', onClick: () => { location.href = `/coin/${wsym}`; } }] });
+                                    if (store.settings().soundAlerts) alertEngine._beep(200, 0.12, 0.4);
+                                }
+                                this._priceDropRef.px = wpx;
+                            });
+                        }
+                    }
+                }
+
+            } catch {}
+        },
+        _priceDropRef: null,
+        _priceDropWired: false,
+        async _watchBtn(sym) {
+            if (document.getElementById(CONFIG.ids.watchBtn)) return;
+            const key = `wb:${sym}`;
+            if (this._pending.has(key)) return;
+            this._pending.add(key);
+            await utils.sleep(600);
+            const h = document.querySelector('main h1, main .text-2xl.font-bold, main .text-3xl.font-bold');
+            if (!h) { this._pending.delete(key); return; }
+            const btn = document.createElement('button');
+            btn.id = CONFIG.ids.watchBtn;
+            btn.className = 're-outline-btn' + (watchlist.has(sym) ? ' active' : '');
+            btn.textContent = watchlist.has(sym) ? '★ Watching' : '☆ Watch';
+            btn.onclick = () => {
+                if (watchlist.has(sym)) { watchlist.del(sym); btn.textContent = '☆ Watch'; btn.classList.remove('active'); }
+                else { watchlist.add(sym); btn.textContent = '★ Watching'; btn.classList.add('active'); }
+            };
+            h.insertAdjacentElement('afterend', btn);
+            this._pending.delete(key);
         },
         async _riskCard(sym) {
             if (document.getElementById(CONFIG.ids.coinRiskCard) || !store.settings().riskScore) return;
@@ -866,7 +1359,7 @@
             }
             document.getElementById(CONFIG.ids.coinTxRefresh)?.addEventListener('click', () => this._loadTx(sym, 1, true));
             await this._loadTx(sym, 1);
-            this.startTsTimer();
+            if (store.settings().txTimestamps) this.startTsTimer();
             this._pending.delete(key);
         },
         async _loadTx(sym, pg = 1, isRefresh = false) {
@@ -875,14 +1368,7 @@
             if (ref) ref.querySelector('svg')?.classList.add('re-spin');
             if (!isRefresh) body.innerHTML = `<div class="flex flex-col items-center gap-2 text-muted-foreground">${ICONS.loading}<span class="text-sm animate-pulse">Loading page ${pg}...</span></div>`;
             try {
-                let d = null;
-                try {
-                    d = await vaaqApi.coinTrades(sym, pg, 10);
-                } catch {}
-                if (!d) {
-                    const r = await fetch(`/api/coin/${sym}/trades?page=${pg}&limit=10`); if (!r.ok) throw 0;
-                    d = await r.json();
-                }
+                const d = await rugplayApi.coinTrades(sym, pg, 10);
                 const tr = d.trades || d.data || d.results || [];
                 if (ref) ref.querySelector('svg')?.classList.remove('re-spin');
                 if (!document.getElementById(CONFIG.ids.coinTxCard)) return;
@@ -899,7 +1385,7 @@
                 }).join('');
                 if (isRefresh) {
                     const tbody = body.querySelector('tbody');
-                    if (tbody) { const oldIds = new Set(Array.from(tbody.querySelectorAll('tr')).map(r => r.dataset.id)); const newIds = new Set(tr.map(t => String(t.id || ''))); tbody.querySelectorAll('tr').forEach(row => { if (!newIds.has(row.dataset.id)) row.remove(); }); const tmp = document.createElement('div'); tmp.innerHTML = `<table><tbody>${rows}</tbody></table>`; Array.from(tmp.querySelectorAll('tr')).reverse().forEach(nr => { if (!oldIds.has(nr.dataset.id)) { nr.classList.add('re-new-tx'); tbody.prepend(nr); } }); while (tbody.children.length > 10) tbody.lastChild.remove(); return; }
+                    if (tbody) { const oldIds = new Set(Array.from(tbody.querySelectorAll('tr')).map(r => r.dataset.id)); const newIds = new Set(tr.map(t => String(t.id || ''))); tbody.querySelectorAll('tr').forEach(row => { if (!newIds.has(row.dataset.id)) row.remove(); }); const tmp = document.createElement('div'); tmp.innerHTML = `<table><tbody>${rows}</tbody></table>`; Array.from(tmp.querySelectorAll('tr')).reverse().forEach(nr => { if (!oldIds.has(nr.dataset.id)) { if (store.settings().txHighlightNew) nr.classList.add('re-new-tx'); tbody.prepend(nr); } }); while (tbody.children.length > 10) tbody.lastChild.remove(); return; }
                 }
                 body.innerHTML = `<div class="relative w-full overflow-x-auto"><table class="w-full caption-bottom text-sm"><thead class="[&_tr]:border-b"><tr class="border-b"><th class="h-9 px-3 pl-6 text-left font-medium text-muted-foreground">Type</th><th class="h-9 px-3 text-left font-medium text-muted-foreground">User</th><th class="h-9 px-3 text-left font-medium text-muted-foreground">Value</th><th class="h-9 px-3 pr-6 text-right font-medium text-muted-foreground">Time</th></tr></thead><tbody>${rows}</tbody></table></div>`;
                 const pag = document.getElementById(CONFIG.ids.coinTxPagination);
@@ -935,9 +1421,37 @@
         },
     };
 
+    const watchlist = {
+        _prices: {},
+        init() {
+            wsInterceptor.on(d => {
+                const sym = ((d.data?.coinSymbol || d.data?.symbol) || '').toUpperCase();
+                const px = parseFloat(d.data?.price || d.data?.currentPrice || 0);
+                if (!sym || !px) return;
+                this._prices[sym] = px;
+                const el = document.getElementById(`re-wlp-${sym}`);
+                if (el) el.textContent = utils.usd(px);
+            });
+        },
+        get: () => store.get('re:wl', []),
+        set: v => store.set('re:wl', v),
+        has: sym => watchlist.get().includes(String(sym).toUpperCase()),
+        add(sym) { const wl = watchlist.get(); if (wl.includes(sym)) { notifier.info(`${sym} already in watchlist`); return; } wl.push(sym); watchlist.set(wl); notifier.ok(`${sym} added to watchlist`); },
+        del(sym) { watchlist.set(watchlist.get().filter(s => s !== sym)); },
+        renderPanel() {
+            const el = document.getElementById('re-wl-panel-body'); if (!el) return;
+            const wl = watchlist.get();
+            if (!wl.length) { el.innerHTML = '<div class="xp-empty">Watchlist empty.<br>Add coins from any coin page.</div>'; return; }
+            el.innerHTML = wl.map(s => `<div class="xp-wl-row"><a href="/coin/${s}" class="xp-wl-sym">${s}</a><span class="xp-wl-px" id="re-wlp-${s}">${this._prices[s]?utils.usd(this._prices[s]):'—'}</span><button class="xp-wl-del" data-s="${s}"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>`).join('');
+            el.querySelectorAll('.re-wl-del').forEach(b => b.onclick = () => { this.del(b.dataset.s); this.renderPanel(); });
+        },
+    };
+
     const profileEnhancer = {
         async init() {
             if (!utils.isUserPage() || document.getElementById(CONFIG.ids.profileBtns)) return;
+            const s = store.settings();
+            if (!s.profileHistory && !s.profileWatch) return;
             const pu = utils.getUsernameFromPage(); if (!pu) return;
             const hdr = document.querySelector(CONFIG.selectors.profileHeaderContainer); if (!hdr) return;
             hdr.style.position = 'relative';
@@ -946,7 +1460,14 @@
             const btnCls = 'focus-visible:border-ring focus-visible:ring-ring/50 inline-flex shrink-0 items-center justify-center whitespace-nowrap text-sm font-medium outline-none transition-all focus-visible:ring-[3px] disabled:pointer-events-none disabled:opacity-50 cursor-pointer bg-background shadow-xs hover:bg-accent hover:text-accent-foreground dark:bg-input/30 dark:border-input dark:hover:bg-input/50 border h-8 gap-1.5 rounded-md px-3';
             const me = await utils.getLoggedInUsername();
             if (me?.toLowerCase() === pu.toLowerCase()) { const a = document.createElement('a'); a.href = '/settings'; a.className = btnCls; a.innerHTML = `${ICONS.edit} Edit`; cont.appendChild(a); }
-            const histBtn = document.createElement('button'); histBtn.className = btnCls; histBtn.innerHTML = `${ICONS.history} History`; histBtn.onclick = () => this._showHistory(pu, 1); cont.appendChild(histBtn);
+            if (s.profileHistory) { const histBtn = document.createElement('button'); histBtn.className = btnCls; histBtn.innerHTML = `${ICONS.history} History`; histBtn.onclick = () => this._showHistory(pu, 1); cont.appendChild(histBtn); }
+            if (s.profileWatch) {
+                const wlBtn = document.createElement('button');
+                wlBtn.className = btnCls;
+                wlBtn.textContent = watchlist.has(pu) ? '★ Watching' : '☆ Watch';
+                wlBtn.onclick = () => { if (watchlist.has(pu)) { watchlist.del(pu); wlBtn.textContent = '☆ Watch'; } else { watchlist.add(pu); wlBtn.textContent = '★ Watching'; } };
+                cont.appendChild(wlBtn);
+            }
             hdr.appendChild(cont);
         },
         async _showHistory(user, pg = 1) {
@@ -964,8 +1485,8 @@
             pag.innerHTML = '';
             body.innerHTML = `<div class="flex flex-col items-center justify-center h-64 gap-3 text-muted-foreground">${ICONS.loading}<span class="text-sm animate-pulse">Loading...</span></div>`;
             try {
-                const r = await fetch(`/api/user/${user}/trades?page=${pg}&limit=15`); if (!r.ok) throw 0;
-                const d = await r.json(); const tr = d.trades || d.data || d.results || [];
+                const d = await rugplayApi.userTrades(user, pg, 15);
+                const tr = d.trades || d.data || d.results || [];
                 if (!tr.length) { body.innerHTML = '<div class="flex items-center justify-center h-64 text-muted-foreground">No trade history found</div>'; return; }
                 body.innerHTML = `<table class="w-full text-sm"><thead class="sticky top-0 bg-card z-10 border-b"><tr class="text-muted-foreground"><th class="h-10 px-4 text-left font-medium">Type</th><th class="h-10 px-4 text-left font-medium">Coin</th><th class="h-10 px-4 text-left font-medium">Qty</th><th class="h-10 px-4 text-left font-medium">Price</th><th class="h-10 px-4 text-right font-medium">Total</th><th class="h-10 px-4 text-right font-medium">Time</th></tr></thead><tbody>${tr.map(t => { const type = (t.type || 'BUY').toUpperCase(); const isSell = type === 'SELL'; const cls = isSell ? 'bg-destructive' : 'bg-green-600'; return `<tr class="hover:bg-muted/40 border-b transition-colors"><td class="p-4 align-middle"><span class="inline-flex items-center justify-center rounded-md border px-2 py-0.5 text-xs font-medium text-white border-transparent ${cls}">${type}</span></td><td class="p-4 align-middle"><a href="/coin/${t.coinSymbol || t.symbol}" class="font-bold hover:text-primary">${t.coinSymbol || t.symbol || '?'}</a></td><td class="p-4 align-middle font-mono text-xs text-muted-foreground">${utils.num(parseFloat(t.quantity || 0))}</td><td class="p-4 align-middle font-mono text-sm">$${parseFloat(t.price || 0).toFixed(6)}</td><td class="p-4 align-middle font-mono text-sm font-bold text-right">${utils.usd(t.totalValue || 0)}</td><td class="p-4 align-middle text-sm text-muted-foreground text-right">${utils.date(t.timestamp || t.createdAt)}</td></tr>`; }).join('')}</tbody></table>`;
                 const p = d.pagination;
@@ -987,7 +1508,7 @@
         show() {
             if (this.isVisible) return;
             const main = document.querySelector(CONFIG.selectors.mainContent); if (!main) return;
-            this.originalMainChildren = Array.from(main.children);
+            this.originalMainChildren = Array.from(main.children).filter(c => c.id !== CONFIG.ids.panelWrapper);
             this.originalMainChildren.forEach(c => c.style.display = 'none');
             const wrap = document.createElement('div'); wrap.id = CONFIG.ids.panelWrapper; wrap.className = 'w-full max-w-6xl mx-auto p-4 md:p-8';
             wrap.style.animation = 're-fadein .25s cubic-bezier(.16,1,.3,1) forwards';
@@ -1000,177 +1521,687 @@
             notifications.apply();
             adBlocker.apply();
             const s = store.settings();
-            this._syncToggle('re-tog-notifications', s.notifications);
-            this._syncToggle('re-tog-adblock', s.adblock);
-            this._syncToggle('re-tog-offline', s.appearOffline);
-            this._syncToggle('re-tog-sticky', s.stickyPortfolio);
-            this._syncToggle('re-tog-pnl', s.showPnL);
-            this._syncToggle('re-tog-risk', s.riskScore);
-            this._syncToggle('re-tog-bot', s.botWarning);
-            this._syncToggle('re-tog-volume', s.volumeSpikes);
-            this._syncToggle('re-tog-desktop', s.desktopAlerts);
-            this._syncToggle('re-tog-compact', s.compactMode);
-            this._syncToggle('re-tog-dark', s.forceDark);
-            this._syncToggle('re-tog-auto', s.autoOpenPanel);
+            // mod toggles are rendered directly from store state in _render()
             liveFeed.open = true; liveFeed.render(); liveFeed.startTsTimer();
             dashboard.render();
             settingsEngine.applyAll();
+            ['re-stat-trades','xp-stat-trades'].forEach(id=>{const el=document.getElementById(id);if(el)el.textContent=liveFeed.trades.length;});
         },
         hide() {
             if (!this.isVisible) return;
             document.getElementById(CONFIG.ids.panelWrapper)?.remove();
-            this.originalMainChildren.forEach(c => c.style.display = '');
+            if (this.originalMainChildren.length) {
+                this.originalMainChildren.forEach(c => { try { c.style.display = ''; } catch {} });
+            } else {
+                const main2 = document.querySelector(CONFIG.selectors.mainContent);
+                if (main2) Array.from(main2.children).forEach(c => { try { c.style.display = ''; } catch {} });
+            }
             this.originalMainChildren = [];
             this.isVisible = false;
             liveFeed.open = false; liveFeed.stopTsTimer();
             if (location.hash === '#rugplay-enhanced') history.pushState('', document.title, location.pathname + location.search);
         },
-        _syncToggle(id, val) { const el = document.getElementById(id); if (el) { el.setAttribute('aria-checked', String(val)); el.innerHTML = val ? ICONS_TOGGLE.on : ICONS_TOGGLE.off; } },
+        _syncToggle(id, val) { const el = document.getElementById(id); if (el) { el.setAttribute('aria-checked', String(!!val)); } },
         _render() {
-            const cardCls = 'bg-card text-card-foreground rounded-xl border shadow-sm p-6';
-            const inputCls = 'flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50';
-            const textareaCls = 'flex min-h-[80px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50';
-            const btnCls = 're-panel-btn inline-flex shrink-0 items-center justify-center whitespace-nowrap text-sm font-medium transition-all focus-visible:ring-[3px] disabled:pointer-events-none disabled:opacity-50 shadow-xs h-9 rounded-md px-4 w-full cursor-pointer';
-            const togRow = (id, label, desc) => `<div class="flex items-center justify-between rounded-lg border p-4 shadow-sm transition-colors hover:bg-muted/30 mt-3 first:mt-0"><div class="space-y-0.5"><label class="text-sm font-medium">${label}</label><p class="text-xs text-muted-foreground">${desc}</p></div><button id="${id}" type="button" role="switch" class="cursor-pointer transition-transform hover:scale-105"></button></div>`;
+            const s = store.settings();
+            const activeAlerts = store.alerts().filter(a=>!a.done).length;
+            const wlCount = store.get('re:wl',[]).length;
+
+            const MODS = [
+                // ══ INTERFACE ════════════════════════════════════════════════
+                {key:"adblock",           name:"Ad Blocker",            desc:"Removes all Google and third-party ads injected into Rugplay pages. Cleaner experience, zero distractions.", cat:"Interface"},
+                {key:"notifications",     name:"Notification Badges",   desc:"Shows unread notification count on the sidebar icon. Disable to hide the red dot entirely.", cat:"Interface"},
+                {key:"stickyPortfolio",   name:"Sticky Portfolio",      desc:"Pins your portfolio widget to the very bottom of the sidebar so it is always visible no matter how far you scroll.", cat:"Interface"},
+                {key:"sidebarCompact",    name:"Compact Sidebar",       desc:"Reduces the height of every sidebar nav item to 32px, fitting more items without scrolling.", cat:"Interface"},
+                {key:"compactMode",       name:"Compact Page Layout",   desc:"Tightens Tailwind spacing classes across the entire Rugplay UI, similar to a dense data mode.", cat:"Interface"},
+                {key:"focusMode",         name:"Focus Mode",            desc:"Fades the sidebar, nav, and header to 15% opacity so you can concentrate on the main content. Hover to reveal them.", cat:"Interface"},
+                {key:"borderlessCards",   name:"Borderless Cards",      desc:"Removes all card borders and box shadows for a minimal, flat look. Pairs well with dark mode.", cat:"Interface"},
+                {key:"monoFont",          name:"Monospace Font",        desc:"Forces the entire Rugplay UI into monospace font. Looks great for data-dense pages.", cat:"Interface"},
+                {key:"reducedMotion",     name:"Reduce Motion",         desc:"Sets all CSS animations and transitions to 0.01ms. Useful if you find motion distracting or are on a slow machine.", cat:"Interface"},
+                {key:"smoothScrolling",   name:"Smooth Scrolling",      desc:"Enables CSS smooth scrolling across the entire page. Makes navigation feel fluid.", cat:"Interface"},
+                {key:"largeClickTargets", name:"Large Click Targets",   desc:"Ensures all buttons and links have a minimum height of 32px, reducing misclicks on small elements.", cat:"Interface"},
+                {key:"betterScrollbars",  name:"Better Scrollbars",     desc:"Replaces the default scrollbars with slim 6px styled ones that match Rugplay dark theme.", cat:"Interface"},
+                {key:"hideFooter",        name:"Hide Footer",           desc:"Hides the page footer entirely to reclaim vertical space on every page.", cat:"Interface"},
+                {key:"hidePromoBar",      name:"Hide Promo Banners",    desc:"Hides promotional banners and announcement bars that appear at the top of some Rugplay pages.", cat:"Interface"},
+                {key:"hideRightSidebar",  name:"Hide Right Panel",      desc:"Collapses the right-side sidebar panel on pages that have one, giving the main content more room.", cat:"Interface"},
+                {key:"hideOnlineCount",   name:"Hide Online Count",     desc:"Hides user online count indicators across the platform for a less noisy experience.", cat:"Interface"},
+                {key:"dimInactiveTabs",   name:"Dim Inactive Tabs",     desc:"Slightly dims content in browser tabs that are not focused, saving attention for the active one.", cat:"Interface"},
+                {key:"sidebarSearch",     name:"Sidebar Quick Search",  desc:"Adds a Quick Search button to the sidebar navigation. Ctrl+K also works from anywhere.", cat:"Interface"},
+                {key:"urlShortcuts",      name:"URL Shortcuts",         desc:"Lets you navigate to /@username or /*SYMBOL directly from the address bar.", cat:"Interface"},
+                {key:"keyboardShortcuts", name:"Keyboard Shortcuts",    desc:"Enables all Enhanced keyboard shortcuts: Ctrl+K for quick search, Ctrl+Shift+E for the Enhanced panel.", cat:"Interface"},
+                {key:"autoOpenPanel",     name:"Auto-open Panel",       desc:"Automatically opens the Enhanced panel every time you load Rugplay. Good if you live in the dashboard.", cat:"Interface"},
+                // ══ TRADING ══════════════════════════════════════════════════
+                {key:"txCard",            name:"Transaction Card",      desc:"Injects a Recent Transactions card on every coin page showing the last 10 trades with pagination and live refresh.", cat:"Trading"},
+                {key:"riskCard",          name:"Risk Assessment Card",  desc:"Injects a Risk Assessment card on coin pages with a 0-100 score based on age, holders, market cap, and sell pressure.", cat:"Trading"},
+                {key:"riskScore",         name:"Risk Scoring Engine",   desc:"Powers the background risk calculation used by the Risk Assessment Card and the Reporter badge. Disable to stop all risk computation.", cat:"Trading"},
+                {key:"reportedBadge",     name:"Reported Badge",        desc:"Shows a Community reported badge on coin pages where the creator or coin symbol has been submitted to the Rugpull Reporter.", cat:"Trading"},
+                {key:"coinNotes",         name:"Coin Notes",            desc:"Adds a private per-coin notes widget on every coin page. Notes are stored 100% locally in your browser, never sent anywhere.", cat:"Trading"},
+                {key:"highlightNewCoins", name:"Highlight New Coins",   desc:"Adds a green left-border to coins under 1 hour old anywhere they appear in tables or feeds.", cat:"Trading"},
+                {key:"showCoinAge",       name:"Show Coin Age",         desc:"Displays the age of a coin underneath the coin name on coin pages.", cat:"Trading"},
+                {key:"showHolderCount",   name:"Show Holder Count",     desc:"Displays the holder count prominently on coin pages alongside the standard market cap data.", cat:"Trading"},
+                {key:"showCreatorBadge",  name:"Show Creator Tag",      desc:"Shows Enhanced user tags on coin page comments and profile pages.", cat:"Trading"},
+                {key:"holdersWarning",    name:"Low Holder Warning",    desc:"Shows a warning indicator on coin pages when holder count is below 10, signalling high concentration risk.", cat:"Trading"},
+                {key:"warnLowLiquidity",  name:"Low Liquidity Warning", desc:"Warns when a coin market cap is under $500, indicating extremely thin liquidity and high rugpull risk.", cat:"Trading"},
+                {key:"txTimestamps",      name:"Live Timestamps",       desc:"Keeps transaction timestamps in the Recent Transactions card updated live without refreshing.", cat:"Trading"},
+                {key:"txHighlightNew",    name:"Highlight New Txns",    desc:"Animates newly appeared transactions with a green flash when the feed refreshes.", cat:"Trading"},
+                {key:"confirmTrades",     name:"Trade Confirmation",    desc:"Adds a confirmation step before executing buy/sell trades to prevent accidental clicks.", cat:"Trading"},
+                {key:"showFeeEstimate",   name:"Fee Estimate",          desc:"Shows an estimated transaction fee in USD before you confirm a trade, so you always know what you are paying.", cat:"Trading"},
+                {key:"highlightProfitLoss", name:"P&L Highlight",      desc:"Colors your portfolio positions green or red based on unrealised profit/loss for instant visual reference.", cat:"Trading"},
+                {key:"showPortfolioPercent", name:"Portfolio %",        desc:"Shows each coin percentage of your total portfolio value in the sidebar portfolio widget.", cat:"Trading"},
+                {key:"showPriceChange",   name:"24h Price Change",      desc:"Shows the 24-hour percentage price change alongside coin names throughout the platform.", cat:"Trading"},
+                {key:"showVolume24h",     name:"24h Volume",            desc:"Displays 24-hour trading volume on coin pages as an additional data point next to market cap.", cat:"Trading"},
+                {key:"showMarketCap",     name:"Market Cap Display",    desc:"Ensures the market cap figure is always prominently visible on coin pages and feed rows.", cat:"Trading"},
+                {key:"highlightWhaleTrades", name:"Whale Trade Glow",  desc:"Draws a gold ring around trades in the live feed and transaction card that exceed the configured whale threshold.", cat:"Trading"},
+                {key:"profileHistory",    name:"Trade History Button",  desc:"Adds a History button on every user profile page that opens a full paginated trade history modal.", cat:"Trading"},
+                {key:"profileWatch",      name:"Watch User Button",     desc:"Adds a Watch toggle on user profile pages so you can track them in your watchlist.", cat:"Trading"},
+                {key:"clickableRows",     name:"Clickable Table Rows",  desc:"Makes every row in portfolio and holdings tables clickable — clicking anywhere on the row navigates to the coin page.", cat:"Trading"},
+                {key:"showPnL",           name:"Session P&L",           desc:"Tracks your total portfolio value at session start and displays your unrealised P&L in the sidebar. Resets on refresh.", cat:"Trading"},
+                // ══ ALERTS ═══════════════════════════════════════════════════
+                {key:"botWarning",        name:"Bot Detection",         desc:"Analyses timing variance and repeat-trader ratio in the live WebSocket feed. Fires when bot-like patterns are detected on any coin.", cat:"Alerts"},
+                {key:"volumeSpikes",      name:"Volume Spike Alert",    desc:"Monitors 60-second rolling volume per coin. Fires a warning when a single coin exceeds the configured USD threshold in one minute.", cat:"Alerts"},
+                {key:"whalePing",         name:"Whale Radar Ping",      desc:"Notifies you in the Enhanced panel Whale Radar when a single trade exceeds your configured whale threshold (default $250).", cat:"Alerts"},
+                {key:"alertOnWatchlistTrade", name:"Watchlist Alert",   desc:"Pops a notification whenever a coin on your watchlist sees a new trade in the live WebSocket feed.", cat:"Alerts"},
+                {key:"alertOnNewCoin",    name:"New Coin Alert",        desc:"Fires a notification when a brand-new coin (under 5 minutes old) appears in the live trade feed for the first time.", cat:"Alerts"},
+                {key:"alertOnHolderDrop", name:"Holder Drop Alert",     desc:"Watches for holder count decreasing rapidly on coin pages you are currently viewing. Fires if holders drop by 10%+ in 2 minutes.", cat:"Alerts"},
+                {key:"alertOnVolumeSpike", name:"Volume Spike Thresh",  desc:"Alert fires when 60-second rolling volume exceeds the configured USD amount. Adjust the threshold in the volume spike setting.", cat:"Alerts"},
+                {key:"alertOnBotActivity", name:"Bot Activity Alert",   desc:"Shows a notification toast when bot patterns are detected. Disable if you find it too noisy on high-activity coins.", cat:"Alerts"},
+                {key:"alertOnPriceDrop",  name:"Price Drop Alert",      desc:"Fires a notification if a coin you are watching drops by more than the configured percentage within a single minute.", cat:"Alerts"},
+                {key:"alertOnNewReport",  name:"New Report Alert",      desc:"Notifies you when a new rugpull report is submitted by the community to the Enhanced reporter API.", cat:"Alerts"},
+                {key:"alertOnCreatorSell", name:"Creator Sell Alert",   desc:"Fires when the coin creator wallet shows a SELL transaction in the live trade feed — a classic rugpull warning sign.", cat:"Alerts"},
+                {key:"desktopAlerts",     name:"Desktop Notifications", desc:"Sends browser-level push notifications for price alerts and major events. Requires notification permission.", cat:"Alerts"},
+                {key:"flashTitle",        name:"Flash Tab Title",       desc:"Briefly flashes the browser tab title when a price alert fires, even if the tab is in the background.", cat:"Alerts"},
+                {key:"soundAlerts",       name:"Sound Alerts",          desc:"Plays a brief audio tone when a price alert triggers. Uses the Web Audio API — no external files needed.", cat:"Alerts"},
+                // ══ PRIVACY ══════════════════════════════════════════════════
+                {key:"appearOffline",     name:"Appear Offline",        desc:"Spoofs document.hidden and document.visibilityState so Rugplay thinks your tab is hidden, suppressing online status in DMs.", cat:"Privacy"},
+                {key:"hideBalance",       name:"Hide Balance",          desc:"Hides all balance and portfolio value numbers across Rugplay. Numbers show as dots until you hover.", cat:"Privacy"},
+                {key:"blurPortfolioValue", name:"Blur Portfolio",       desc:"Blurs portfolio numbers in the sidebar until you hover over them. Good for streaming or sharing your screen.", cat:"Privacy"},
+                {key:"blockAnalytics",    name:"Block Analytics",       desc:"Blocks known Rugplay analytics endpoints and tracking scripts from firing. Enhanced itself never tracks you.", cat:"Privacy"},
+                {key:"stripTrackingParams", name:"Strip Tracking",      desc:"Automatically removes UTM and tracking query parameters from URLs as you navigate.", cat:"Privacy"},
+                {key:"anonymousMode",     name:"Anonymous Mode",        desc:"Replaces your username display with Anon — useful for sharing screenshots without revealing your account.", cat:"Privacy"},
+                {key:"noReferrer",        name:"No Referrer",           desc:"Adds rel=noreferrer to all external links you click, preventing external sites from knowing you came from Rugplay.", cat:"Privacy"},
+                {key:"hideOfflineDM",     name:"Hide DM Online Status", desc:"Hides the green online dot on DM conversations so others cannot see when you were last active.", cat:"Privacy"},
+                // ══ DISPLAY ══════════════════════════════════════════════════
+                {key:"forceDark",         name:"Force Dark Mode",       desc:"Forces Rugplay into dark mode by toggling the dark class on the root element, even if your OS is set to light.", cat:"Display"},
+                {key:"autoRefreshFeed",   name:"Auto-refresh Feed",     desc:"Keeps the live transaction feed and Recent Transactions cards updating automatically without you needing to click Refresh.", cat:"Display"},
+                {key:"watchlistAlerts",   name:"Watchlist Notify",      desc:"Shows a toast notification in the corner when a coin on your watchlist has new trade activity.", cat:"Display"},
+                {key:"feedCompact",       name:"Compact Feed",          desc:"Reduces the height of each row in the live trade feed from 52px to 36px, fitting around 50% more trades on screen.", cat:"Display"},
+                {key:"showSpread",        name:"Show Price Spread",     desc:"Displays the bid/ask spread percentage on coin pages to help you understand entry/exit cost before trading.", cat:"Display"},
+                {key:"preloadCoinData",   name:"Preload Coin Data",     desc:"On hover, starts fetching coin data in the background so the page loads instantly when you click.", cat:"Display"},
+                {key:"quickSearch",       name:"Quick Search (Ctrl+K)", desc:"Enables the Ctrl+K search modal. Searches coins and users via Rugplay own API. Falls back to the live feed if the API is unavailable.", cat:"Display"},
+                {key:"highlightBuys",     name:"Highlight Buys",        desc:"Adds a subtle green left border to BUY transactions throughout the live feed and transaction cards.", cat:"Display"},
+                {key:"highlightSells",    name:"Highlight Sells",       desc:"Adds a subtle red left border to SELL transactions throughout the live feed and transaction cards.", cat:"Display"},
+                {key:"showCandleColors",  name:"Candle Colors",         desc:"Ensures buy/sell color coding is applied consistently across all chart candles and price indicators.", cat:"Display"},
+                // ══ EXPERIMENTAL ═════════════════════════════════════════════
+                {key:"trackSlippage",     name:"Slippage Tracker",      desc:"[Beta] Tracks estimated slippage on your recent trades by comparing execution price to the feed price at trade time.", cat:"Experimental"},
+                {key:"showBidAsk",        name:"Live Bid/Ask",          desc:"[Beta] Attempts to derive a live bid/ask spread from recent WebSocket trade data and display it on coin pages.", cat:"Experimental"},
+                {key:"showPortfolioCostBasis", name:"Cost Basis",       desc:"[Beta] Estimates your average cost basis per coin from your trade history and shows unrealised P&L against it.", cat:"Experimental"},
+                {key:"alertOnRiskChange", name:"Risk Change Alert",     desc:"[Beta] Fires when a coin local risk score changes by more than 10 points between checks — e.g. sudden holder drop.", cat:"Experimental"},
+                {key:"devMode",           name:"Dev Mode",              desc:"[Beta] Logs Enhanced internal events to the browser console. Only useful if you are debugging or contributing to the project.", cat:"Experimental"},
+            ];
+
+            const CATS = ["Interface","Trading","Alerts","Privacy","Display","Experimental"];
+            const CAT_COLORS = {Interface:"#60a5fa",Trading:"#34d399",Alerts:"#f59e0b",Privacy:"#a78bfa",Display:"#f472b6",Experimental:"#94a3b8"};
+            const CAT_ICONS = {
+                Interface:    '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>',
+                Trading:      '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>',
+                Alerts:       '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>',
+                Privacy:      '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>',
+                Display:      '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>',
+                Experimental: '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 3h6l1 7H8L9 3z"/><path d="M8 10l-4.45 8.01A2 2 0 0 0 5.3 21h13.4a2 2 0 0 0 1.75-2.99L16 10"/></svg>',
+            };
+
+            const modCardHTML = (mod) => {
+                const on = !!s[mod.key];
+                return `<div class="xp-mod-card ${on?'on':''}" data-mod-key="${mod.key}">
+                    <div class="xp-mod-top">
+                        <div class="xp-mod-info">
+                            <div class="xp-mod-name">${mod.name}</div>
+                            <div class="xp-mod-desc">${mod.desc}</div>
+                        </div>
+                        <button class="xp-toggle ${on?'on':''}" data-mod-key="${mod.key}" aria-checked="${on}" role="switch" title="${on?'Enabled':'Disabled'}">
+                            <span class="xp-toggle-knob"></span>
+                        </button>
+                    </div>
+                </div>`;
+            };
+
+            const modsHTML = CATS.map(cat => {
+                const catMods = MODS.filter(m => m.cat === cat);
+                const enabledCount = catMods.filter(m => !!s[m.key]).length;
+                const color = CAT_COLORS[cat];
+                return `<div class="xp-cat-block">
+                    <div class="xp-cat-hd">
+                        <span class="xp-cat-dot" style="background:${color}"></span>
+                        <span class="xp-cat-icon" style="color:${color}">${CAT_ICONS[cat]}</span>
+                        <span class="xp-cat-name">${cat}</span>
+                        <span class="xp-cat-pill">${enabledCount}/${catMods.length}</span>
+                    </div>
+                    <div class="xp-mod-grid">${catMods.map(modCardHTML).join('')}</div>
+                </div>`;
+            }).join('');
+
+            const enabledTotal = MODS.filter(m => !!s[m.key]).length;
+
             return `
-            <style>
-            @keyframes re-fadein{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
-            @keyframes re-modal-in{from{opacity:0;transform:scale(.96) translateY(10px)}to{opacity:1;transform:none}}
-            .re-panel-btn{background:hsl(var(--foreground))!important;color:hsl(var(--background))!important;border:none!important}
-            .re-panel-btn:hover{opacity:.9}
-            .re-tabs{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
-            .re-tab{border:1px solid hsl(var(--border));background:transparent;color:hsl(var(--muted-foreground));padding:6px 10px;border-radius:999px;font-size:12px;font-weight:700;cursor:pointer;transition:background .12s,color .12s,border-color .12s}
-            .re-tab:hover{background:hsl(var(--accent)/0.6);color:hsl(var(--foreground))}
-            .re-tab.active{background:hsl(var(--foreground));color:hsl(var(--background));border-color:transparent}
-            </style>
-            <div class="mb-6 space-y-1.5">
-                <h1 class="text-3xl font-bold tracking-tight flex items-center gap-3">${ICONS.enhanced} Rugplay Enhanced</h1>
-                <p class="text-muted-foreground">v${GM_info.script.version} by <a href="https://github.com/devbyego/rugplay-enhanced" target="_blank" class="hover:text-foreground transition-colors underline-offset-4 hover:underline">devbyego</a> · <a href="https://discord.com" target="_blank" class="hover:text-foreground transition-colors">Discord: devbyego</a></p>
-                <p class="text-xs text-muted-foreground mt-2"><kbd class="re-kbd">Ctrl+K</kbd> Quick search · <kbd class="re-kbd">Ctrl+Shift+E</kbd> This panel</p>
-                <div class="re-tabs">
-                    <button class="re-tab" data-re-tab="dashboard">Dashboard</button>
-                    <button class="re-tab" data-re-tab="alerts">Alerts</button>
-                    <button class="re-tab" data-re-tab="reporter">Reporter</button>
-                    <button class="re-tab" data-re-tab="settings">Settings</button>
-                    <button class="re-tab" data-re-tab="status">Status</button>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Geist+Mono:wght@400;500;600&display=swap');
+:root {
+    --xp-bg:#09090b; --xp-s1:#111113; --xp-s2:#18181b; --xp-s3:#27272a;
+    --xp-b1:rgba(255,255,255,.07); --xp-b2:rgba(255,255,255,.11); --xp-b3:rgba(255,255,255,.18);
+    --xp-t1:#fafafa; --xp-t2:#a1a1aa; --xp-t3:#52525b;
+    --xp-green:#22c55e; --xp-red:#ef4444; --xp-amber:#f59e0b; --xp-blue:#3b82f6;
+    --xp-r:10px; --xp-r-sm:6px;
+    --xp-font:'Geist',-apple-system,BlinkMacSystemFont,sans-serif;
+    --xp-mono:'Geist Mono','SF Mono',ui-monospace,monospace;
+}
+@keyframes xp-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+@keyframes xp-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.65)}}
+@keyframes xp-spin{to{transform:rotate(360deg)}}
+
+/* ── Shell ── */
+#re-panel-wrapper{background:var(--xp-bg)!important;padding:0!important;max-width:100%!important;min-height:100vh;font-family:var(--xp-font)!important;color:var(--xp-t1)!important;display:flex;flex-direction:column}
+.xp-shell{display:flex;flex-direction:column;min-height:100vh;animation:xp-in .2s cubic-bezier(.16,1,.3,1)}
+
+/* ── Top bar ── */
+.xp-bar{display:flex;align-items:center;justify-content:space-between;padding:0 24px;height:50px;border-bottom:1px solid var(--xp-b1);background:var(--xp-bg);position:sticky;top:0;z-index:100;gap:12px;flex-shrink:0}
+.xp-bar-l,.xp-bar-r{display:flex;align-items:center;gap:8px}
+.xp-logo{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:700;letter-spacing:-.025em;color:var(--xp-t1)}
+.xp-logo-icon{width:22px;height:22px;background:var(--xp-t1);border-radius:5px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.xp-logo-icon svg{color:var(--xp-bg)}
+.xp-sep{width:1px;height:14px;background:var(--xp-b2)}
+.xp-pill{display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:700;letter-spacing:.04em;border-radius:99px;padding:2px 8px;border:1px solid}
+.xp-pill.live{color:var(--xp-green);background:rgba(34,197,94,.08);border-color:rgba(34,197,94,.18)}
+.xp-pill.ver{color:var(--xp-t3);background:var(--xp-s2);border-color:var(--xp-b1);letter-spacing:.06em}
+.xp-live-dot{width:5px;height:5px;border-radius:50%;background:var(--xp-green);animation:xp-pulse 1.6s ease-in-out infinite}
+.xp-icon-btn{width:28px;height:28px;border-radius:var(--xp-r-sm);background:transparent;border:1px solid var(--xp-b1);color:var(--xp-t2);cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .12s;text-decoration:none}
+.xp-icon-btn:hover{background:var(--xp-s2);color:var(--xp-t1);border-color:var(--xp-b2)}
+.xp-kbd{font-size:9px;font-family:var(--xp-mono);background:var(--xp-s2);border:1px solid var(--xp-b2);border-radius:4px;padding:2px 5px;color:var(--xp-t3)}
+
+/* ── Chips ── */
+.xp-chips{display:flex;align-items:center;gap:5px}
+.xp-chip{display:flex;align-items:center;gap:5px;padding:3px 9px;background:var(--xp-s1);border:1px solid var(--xp-b1);border-radius:var(--xp-r-sm);font-size:11px;transition:border-color .12s;cursor:default}
+.xp-chip:hover{border-color:var(--xp-b2)}
+.xp-chip-v{font-weight:700;color:var(--xp-t1);font-family:var(--xp-mono)}
+.xp-chip-k{color:var(--xp-t2);font-weight:500}
+
+/* ── Nav tabs ── */
+.xp-nav{display:flex;align-items:center;gap:0;padding:0 24px;border-bottom:1px solid var(--xp-b1);background:var(--xp-bg);overflow-x:auto;flex-shrink:0}
+.xp-nav::-webkit-scrollbar{display:none}
+.xp-tab{display:inline-flex;align-items:center;gap:6px;padding:0 11px;height:40px;font-size:12px;font-weight:500;color:var(--xp-t2);background:transparent;border:none;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;transition:color .12s,border-color .12s;white-space:nowrap;font-family:var(--xp-font)}
+.xp-tab:hover{color:var(--xp-t1)}
+.xp-tab.active{color:var(--xp-t1);border-bottom-color:var(--xp-t1);font-weight:600}
+.xp-tab svg{opacity:.5}
+.xp-tab.active svg{opacity:1}
+.xp-tab-badge{font-size:9px;font-weight:800;min-width:15px;height:15px;display:inline-flex;align-items:center;justify-content:center;background:rgba(255,255,255,.09);color:var(--xp-t2);border-radius:99px;padding:0 4px}
+.xp-tab.active .xp-tab-badge{background:var(--xp-t1);color:var(--xp-bg)}
+
+/* ── Body ── */
+.xp-body{flex:1;padding:20px 24px;display:flex;flex-direction:column;gap:14px}
+[data-re-section]{display:none}
+
+/* ── 2-col layout ── */
+.xp-2col{display:grid;grid-template-columns:1fr 300px;gap:14px;align-items:start}
+@media(max-width:1080px){.xp-2col{grid-template-columns:1fr}}
+.xp-col{display:flex;flex-direction:column;gap:14px}
+
+/* ── Stat row ── */
+.xp-stat-row{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+@media(max-width:900px){.xp-stat-row{grid-template-columns:repeat(2,1fr)}}
+.xp-stat-box{background:var(--xp-s1);border:1px solid var(--xp-b1);border-radius:var(--xp-r);padding:14px 16px;cursor:default;transition:border-color .15s,transform .12s}
+.xp-stat-box:hover{border-color:var(--xp-b2);transform:translateY(-1px)}
+.xp-stat-n{font-size:22px;font-weight:800;letter-spacing:-.04em;font-family:var(--xp-mono);color:var(--xp-t1);line-height:1}
+.xp-stat-label{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.09em;color:var(--xp-t3);margin-top:6px}
+.xp-stat-box.green{border-color:rgba(34,197,94,.15)} .xp-stat-box.green .xp-stat-n{color:var(--xp-green)}
+.xp-stat-box.amber{border-color:rgba(245,158,11,.15)} .xp-stat-box.amber .xp-stat-n{color:var(--xp-amber)}
+
+/* ── Cards ── */
+.xp-card{background:var(--xp-s1);border:1px solid var(--xp-b1);border-radius:var(--xp-r);overflow:hidden;transition:border-color .15s}
+.xp-card-hd{padding:12px 16px;border-bottom:1px solid var(--xp-b1);display:flex;align-items:center;justify-content:space-between;gap:10px}
+.xp-card-title{font-size:12px;font-weight:700;letter-spacing:-.01em;display:flex;align-items:center;gap:6px}
+.xp-card-title svg{color:var(--xp-t2)}
+.xp-card-sub{font-size:10px;color:var(--xp-t3);margin-top:2px}
+.xp-card-body{padding:14px 16px}
+
+/* ── Form inputs ── */
+.xp-input{background:var(--xp-s2);border:1px solid var(--xp-b1);border-radius:var(--xp-r-sm);padding:0 10px;height:30px;font-size:12px;color:var(--xp-t1);font-family:var(--xp-font);outline:none;width:100%;box-sizing:border-box;transition:border-color .12s}
+.xp-input:focus{border-color:var(--xp-b3)}
+.xp-input::placeholder{color:var(--xp-t3)}
+.xp-select{background:var(--xp-s2);border:1px solid var(--xp-b1);border-radius:var(--xp-r-sm);padding:0 8px;height:30px;font-size:12px;color:var(--xp-t1);font-family:var(--xp-font);outline:none;cursor:pointer;width:100%;box-sizing:border-box}
+.xp-textarea{background:var(--xp-s2);border:1px solid var(--xp-b1);border-radius:var(--xp-r-sm);padding:9px 11px;font-size:12px;color:var(--xp-t1);font-family:var(--xp-font);outline:none;width:100%;resize:vertical;min-height:80px;box-sizing:border-box;line-height:1.5;transition:border-color .12s}
+.xp-textarea:focus{border-color:var(--xp-b3)}
+.xp-textarea::placeholder{color:var(--xp-t3)}
+.xp-label{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--xp-t3);margin-bottom:4px;display:block}
+.xp-form-row{display:flex;flex-direction:column;gap:3px}
+.xp-form-grid{display:grid;gap:8px}
+
+/* ── Buttons ── */
+.xp-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:0 12px;height:30px;font-size:12px;font-weight:600;font-family:var(--xp-font);border:1px solid var(--xp-b2);border-radius:var(--xp-r-sm);background:var(--xp-s2);color:var(--xp-t1);cursor:pointer;transition:all .12s;white-space:nowrap;box-sizing:border-box}
+.xp-btn:hover{background:var(--xp-s3);border-color:var(--xp-b3)}
+.xp-btn.primary{background:var(--xp-t1);color:var(--xp-bg);border-color:transparent}
+.xp-btn.primary:hover{opacity:.86}
+.xp-btn.ghost{background:transparent;border-color:var(--xp-b1)}
+.xp-btn.ghost:hover{background:var(--xp-s2)}
+.xp-btn.danger{border-color:rgba(239,68,68,.25);color:var(--xp-red)}
+.xp-btn.danger:hover{background:rgba(239,68,68,.07)}
+.xp-btn-full{width:100%}
+
+/* ── Feed ── */
+.xp-feed-ctrl{display:grid;grid-template-columns:1fr 90px 120px 30px;gap:6px;padding:10px 16px;border-bottom:1px solid var(--xp-b1);align-items:center}
+.xp-feed-head{display:grid;grid-template-columns:46px 68px 1fr auto auto;gap:6px;padding:5px 16px;font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.09em;color:var(--xp-t3);border-bottom:1px solid var(--xp-b1)}
+.xp-feed-rows{max-height:280px;overflow-y:auto}
+.xp-feed-row{display:grid;grid-template-columns:46px 68px 1fr auto auto;gap:6px;padding:7px 16px;border-bottom:1px solid var(--xp-b1);font-size:12px;text-decoration:none;color:var(--xp-t1);transition:background .08s;align-items:center}
+.xp-feed-row:last-child{border-bottom:none}
+.xp-feed-row:hover{background:rgba(255,255,255,.02)}
+.xp-feed-row.buy{border-left:2px solid var(--xp-green);padding-left:14px}
+.xp-feed-row.sell{border-left:2px solid var(--xp-red);padding-left:14px}
+.xp-b-buy{font-size:9px;font-weight:800;color:var(--xp-green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:4px;padding:2px 5px;letter-spacing:.03em}
+.xp-b-sell{font-size:9px;font-weight:800;color:var(--xp-red);background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.2);border-radius:4px;padding:2px 5px;letter-spacing:.03em}
+.xp-f-sym{font-weight:700;font-family:var(--xp-mono);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.xp-f-usr{color:var(--xp-t2);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.xp-f-val{font-weight:700;font-size:11px;font-family:var(--xp-mono);white-space:nowrap}
+.xp-f-ts{color:var(--xp-t3);font-size:10px;white-space:nowrap}
+
+/* ── Agg bar ── */
+.xp-agg-row{display:grid;grid-template-columns:repeat(5,1fr);gap:0;border-bottom:1px solid var(--xp-b1)}
+.xp-agg-cell{padding:10px 16px;border-right:1px solid var(--xp-b1);text-align:center}
+.xp-agg-cell:last-child{border-right:none}
+.xp-agg-v{font-size:13px;font-weight:800;font-family:var(--xp-mono);color:var(--xp-t1)}
+.xp-agg-k{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--xp-t3);margin-top:2px}
+
+/* ── Mini rows ── */
+.xp-mini-list{display:flex;flex-direction:column;gap:3px}
+.xp-mini-row{display:grid;grid-template-columns:58px 1fr auto;gap:8px;align-items:center;padding:7px 8px;border-radius:var(--xp-r-sm);text-decoration:none;color:var(--xp-t1);transition:background .1s;border:1px solid transparent}
+.xp-mini-row:hover{background:var(--xp-s2);border-color:var(--xp-b1)}
+.xp-mini-sym{font-weight:800;font-family:var(--xp-mono);font-size:11px}
+.xp-mini-sub{font-size:10px;color:var(--xp-t3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.xp-t-buy{font-size:9px;font-weight:700;padding:2px 6px;border-radius:99px;background:rgba(34,197,94,.1);color:var(--xp-green);white-space:nowrap}
+.xp-t-sell{font-size:9px;font-weight:700;padding:2px 6px;border-radius:99px;background:rgba(239,68,68,.1);color:var(--xp-red);white-space:nowrap}
+
+/* ── Radar ── */
+.xp-radar-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.xp-section-label{font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.1em;color:var(--xp-t3);margin-bottom:7px}
+
+/* ── Watchlist ── */
+.xp-wl-row{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--xp-b1)}
+.xp-wl-row:last-child{border-bottom:none}
+.xp-wl-sym{font-weight:700;font-family:var(--xp-mono);font-size:13px;color:var(--xp-t1);text-decoration:none;flex:1}
+.xp-wl-sym:hover{text-decoration:underline;text-underline-offset:3px}
+.xp-wl-px{font-size:12px;color:var(--xp-t2);font-family:var(--xp-mono)}
+.xp-wl-del{background:none;border:none;cursor:pointer;color:var(--xp-t3);width:22px;height:22px;border-radius:4px;display:flex;align-items:center;justify-content:center;transition:all .1s;flex-shrink:0}
+.xp-wl-del:hover{background:rgba(239,68,68,.1);color:var(--xp-red)}
+
+/* ── Alert rows ── */
+.xp-al-row{display:flex;align-items:center;gap:8px;padding:10px 12px;border:1px solid var(--xp-b1);border-radius:var(--xp-r-sm);background:var(--xp-s2);transition:opacity .15s}
+.xp-al-row.done{opacity:.4}
+.xp-al-info{flex:1}
+.xp-al-sym{font-weight:700;font-size:12px;font-family:var(--xp-mono)}
+.xp-al-meta{font-size:11px;color:var(--xp-t2);margin-top:1px}
+.xp-al-del{background:none;border:none;cursor:pointer;color:var(--xp-t3);padding:3px;border-radius:4px;transition:all .1s;display:flex;align-items:center}
+.xp-al-del:hover{background:rgba(239,68,68,.1);color:var(--xp-red)}
+
+/* ── Mods ── */
+.xp-mods-top{padding:12px 16px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--xp-b1);background:var(--xp-s1);position:sticky;top:90px;z-index:10}
+.xp-mods-sw{flex:1;position:relative}
+.xp-mods-sw svg{position:absolute;left:9px;top:50%;transform:translateY(-50%);color:var(--xp-t3);pointer-events:none}
+.xp-mods-si{padding-left:29px!important}
+.xp-mods-count{font-size:11px;color:var(--xp-t2);white-space:nowrap;font-weight:600}
+.xp-cat-filter{display:flex;gap:4px;padding:10px 16px;border-bottom:1px solid var(--xp-b1);flex-wrap:wrap}
+.xp-cat-btn{font-size:10px;font-weight:700;padding:3px 9px;border-radius:99px;border:1px solid var(--xp-b1);background:transparent;color:var(--xp-t2);cursor:pointer;transition:all .12s;font-family:var(--xp-font)}
+.xp-cat-btn:hover{border-color:var(--xp-b2);color:var(--xp-t1)}
+.xp-cat-btn.active{background:var(--xp-t1);color:var(--xp-bg);border-color:transparent}
+.xp-mods-body{padding:14px 16px;display:flex;flex-direction:column;gap:18px}
+.xp-cat-block{}
+.xp-cat-hd{display:flex;align-items:center;gap:7px;margin-bottom:9px;padding-bottom:7px;border-bottom:1px solid var(--xp-b1)}
+.xp-cat-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
+.xp-cat-icon{display:flex;align-items:center}
+.xp-cat-name{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:var(--xp-t1)}
+.xp-cat-pill{font-size:9px;font-weight:700;padding:1px 6px;background:var(--xp-s2);border:1px solid var(--xp-b1);border-radius:99px;color:var(--xp-t2);margin-left:auto}
+.xp-mod-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:7px}
+.xp-mod-card{background:var(--xp-s2);border:1px solid var(--xp-b1);border-radius:var(--xp-r-sm);padding:11px;display:flex;flex-direction:column;gap:0;transition:border-color .15s}
+.xp-mod-card.on{border-color:var(--xp-b2)}
+.xp-mod-card:hover{border-color:var(--xp-b3)}
+.xp-mod-top{display:flex;gap:10px;align-items:flex-start}
+.xp-mod-info{flex:1;min-width:0}
+.xp-mod-name{font-size:12px;font-weight:700;color:var(--xp-t1);margin-bottom:3px}
+.xp-mod-desc{font-size:10px;color:var(--xp-t2);line-height:1.5}
+
+/* ── Toggle ── */
+.xp-toggle{width:34px;height:18px;border-radius:99px;border:1px solid var(--xp-b2);background:var(--xp-s3);cursor:pointer;position:relative;flex-shrink:0;transition:background .18s,border-color .18s;margin-top:1px}
+.xp-toggle.on{background:var(--xp-t1);border-color:transparent}
+.xp-toggle-knob{position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:var(--xp-t3);transition:left .16s,background .16s;box-shadow:0 1px 3px rgba(0,0,0,.4)}
+.xp-toggle.on .xp-toggle-knob{left:18px;background:var(--xp-bg)}
+
+/* ── Reporter ── */
+.xp-rp-row{padding:11px;background:var(--xp-s2);border:1px solid var(--xp-b1);border-radius:var(--xp-r-sm);display:flex;flex-direction:column;gap:6px;transition:border-color .12s}
+.xp-rp-row:hover{border-color:var(--xp-b2)}
+.xp-rp-hd{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.xp-rp-user{font-weight:700;font-size:12px;font-family:var(--xp-mono)}
+.xp-rp-coin{font-size:11px;color:var(--xp-blue);font-family:var(--xp-mono);font-weight:600}
+.xp-rp-time{font-size:10px;color:var(--xp-t3);margin-left:auto}
+.xp-rp-body{font-size:12px;color:var(--xp-t2);line-height:1.5}
+.xp-rp-foot{display:flex;gap:6px}
+.xp-vote{font-size:11px;font-weight:600;color:var(--xp-t2);background:none;border:1px solid var(--xp-b1);border-radius:4px;padding:2px 7px;cursor:pointer;font-family:var(--xp-font);transition:all .1s}
+.xp-vote.up:hover{color:var(--xp-green);border-color:rgba(34,197,94,.3);background:rgba(34,197,94,.07)}
+.xp-vote.dn:hover{color:var(--xp-red);border-color:rgba(239,68,68,.3);background:rgba(239,68,68,.07)}
+
+/* ── Compare table ── */
+.xp-cmp{width:100%;border-collapse:collapse;font-size:12px}
+.xp-cmp th{padding:9px 13px;text-align:left;font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.09em;color:var(--xp-t3);border-bottom:1px solid var(--xp-b1)}
+.xp-cmp td{padding:8px 13px;border-bottom:1px solid var(--xp-b1);color:var(--xp-t2)}
+.xp-cmp tr:last-child td{border-bottom:none}
+.xp-cmp tr:hover td{background:rgba(255,255,255,.015)}
+.xp-cmp .ours{font-weight:700;color:var(--xp-t1)}
+.xp-cmp .ck{color:var(--xp-green);font-weight:800}
+.xp-cmp .cx{color:var(--xp-t3);opacity:.45}
+.xp-cmp .bad{color:var(--xp-red)!important;font-weight:700}
+.xp-cmp .warn td{background:rgba(239,68,68,.03)}
+
+/* ── Diagnostics ── */
+.xp-diag-row{display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--xp-b1)}
+.xp-diag-row:last-child{border-bottom:none}
+.xp-diag-l{font-size:12px;color:var(--xp-t2);display:flex;align-items:center;gap:7px}
+.xp-diag-v{font-size:11px;font-family:var(--xp-mono);font-weight:600}
+.xp-dot-ok{width:6px;height:6px;border-radius:50%;background:var(--xp-green);flex-shrink:0}
+.xp-dot-err{width:6px;height:6px;border-radius:50%;background:var(--xp-red);flex-shrink:0}
+.xp-dot-idle{width:6px;height:6px;border-radius:50%;background:var(--xp-t3);flex-shrink:0}
+
+/* ── Misc ── */
+.xp-empty{padding:24px;text-align:center;color:var(--xp-t3);font-size:12px;line-height:1.7}
+.xp-loading{display:flex;align-items:center;justify-content:center;gap:8px;padding:20px;color:var(--xp-t2);font-size:12px}
+.xp-spin{animation:xp-spin .8s linear infinite}
+.xp-pag{display:flex;align-items:center;justify-content:center;gap:8px;padding:10px 16px;border-top:1px solid var(--xp-b1)}
+.xp-pag-btn{background:var(--xp-s2);border:1px solid var(--xp-b1);border-radius:var(--xp-r-sm);width:26px;height:26px;display:flex;align-items:center;justify-content:center;font-size:12px;color:var(--xp-t1);cursor:pointer;transition:all .1s;font-family:var(--xp-font)}
+.xp-pag-btn:hover{border-color:var(--xp-b2)}
+.xp-pag-btn:disabled{opacity:.3;cursor:not-allowed}
+.xp-pag-info{font-size:11px;color:var(--xp-t2);font-family:var(--xp-mono)}
+.xp-cl-item{display:flex;gap:9px;padding:7px 0;border-bottom:1px solid var(--xp-b1)}
+.xp-cl-item:last-child{border-bottom:none}
+.xp-cl-dot{width:5px;height:5px;border-radius:50%;background:var(--xp-t3);flex-shrink:0;margin-top:5px}
+.xp-cl-text{font-size:12px;color:var(--xp-t2);line-height:1.5}
+.xp-footer{border-top:1px solid var(--xp-b1);padding:10px 24px;display:flex;align-items:center;justify-content:space-between;font-size:11px;color:var(--xp-t3);flex-shrink:0}
+.xp-footer-links{display:flex;gap:12px}
+.xp-flink{color:var(--xp-t3);text-decoration:none;font-weight:500;transition:color .1s;cursor:pointer;background:none;border:none;font-family:var(--xp-font);font-size:11px;padding:0}
+.xp-flink:hover{color:var(--xp-t1)}
+#re-panel-wrapper ::-webkit-scrollbar{width:4px;height:4px}
+#re-panel-wrapper ::-webkit-scrollbar-track{background:transparent}
+#re-panel-wrapper ::-webkit-scrollbar-thumb{background:var(--xp-b2);border-radius:2px}
+</style>
+
+<div class="xp-shell">
+
+<!-- TOPBAR -->
+<div class="xp-bar">
+    <div class="xp-bar-l">
+        <div class="xp-logo">
+            <div class="xp-logo-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></div>
+            Enhanced
+        </div>
+        <div class="xp-sep"></div>
+        <span class="xp-pill ver">v${GM_info.script.version}</span>
+        <div class="xp-pill live"><div class="xp-live-dot"></div>LIVE</div>
+    </div>
+    <div class="xp-chips">
+        <div class="xp-chip"><span class="xp-chip-v" id="xp-stat-trades">0</span><span class="xp-chip-k">trades</span></div>
+        <div class="xp-chip"><span class="xp-chip-v" id="re-stat-alerts">${activeAlerts}</span><span class="xp-chip-k">alerts</span></div>
+        <div class="xp-chip"><span class="xp-chip-v" id="re-stat-wl">${wlCount}</span><span class="xp-chip-k">watching</span></div>
+        <div class="xp-chip"><span class="xp-chip-v">${enabledTotal}</span><span class="xp-chip-k">mods on</span></div>
+    </div>
+    <div class="xp-bar-r">
+        <span class="xp-kbd">Ctrl+K</span>
+        <span style="font-size:10px;color:var(--xp-t3)">search</span>
+        <div class="xp-sep"></div>
+        <button class="xp-icon-btn" id="re-feedback-btn" title="Feedback">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        </button>
+        <a class="xp-icon-btn" href="https://github.com/devbyego/rugplay-enhanced" target="_blank" title="GitHub">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.477 2 12c0 4.42 2.865 8.166 6.839 9.489.5.092.682-.217.682-.482 0-.237-.008-.866-.013-1.7-2.782.603-3.369-1.342-3.369-1.342-.454-1.155-1.11-1.462-1.11-1.462-.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.578 9.578 0 0 1 12 6.836c.85.004 1.705.114 2.504.336 1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.203 2.394.1 2.647.64.699 1.028 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.741 0 .267.18.578.688.48C19.138 20.163 22 16.418 22 12c0-5.523-4.477-10-10-10z"/></svg>
+        </a>
+    </div>
+</div>
+
+<!-- NAV TABS -->
+<div class="xp-nav">
+    <button class="xp-tab" data-re-tab="dashboard"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>Dashboard</button>
+    <button class="xp-tab" data-re-tab="watchlist"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>Watchlist<span class="xp-tab-badge" id="xp-tab-wl">${wlCount||''}</span></button>
+    <button class="xp-tab" data-re-tab="alerts"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>Alerts<span class="xp-tab-badge" id="xp-tab-al">${activeAlerts||''}</span></button>
+    <button class="xp-tab" data-re-tab="reporter"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>Reporter</button>
+    <button class="xp-tab" data-re-tab="mods"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>Mods<span class="xp-tab-badge">${enabledTotal}/${MODS.length}</span></button>
+    <button class="xp-tab" data-re-tab="features"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>Compare</button>
+    <button class="xp-tab" data-re-tab="status"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>Status</button>
+</div>
+
+<!-- BODY -->
+<div class="xp-body">
+
+<!-- DASHBOARD -->
+<div data-re-section="dashboard">
+<div class="xp-stat-row">
+    <div class="xp-stat-box"><div class="xp-stat-n" id="re-stat-trades">0</div><div class="xp-stat-label">Trades Seen</div></div>
+    <div class="xp-stat-box green"><div class="xp-stat-n">${activeAlerts}</div><div class="xp-stat-label">Active Alerts</div></div>
+    <div class="xp-stat-box"><div class="xp-stat-n">${wlCount}</div><div class="xp-stat-label">Watchlist</div></div>
+    <div class="xp-stat-box amber"><div class="xp-stat-n">${enabledTotal}</div><div class="xp-stat-label">Mods Active</div></div>
+</div>
+<div class="xp-2col">
+    <div class="xp-col">
+        <div class="xp-card">
+            <div class="xp-card-hd">
+                <div><div class="xp-card-title"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/></svg>Live Feed</div><div class="xp-card-sub">Platform-wide trades via WebSocket</div></div>
+                <button id="re-feed-pause" class="xp-btn ghost" style="height:26px;font-size:11px">Pause</button>
+            </div>
+            <div class="xp-feed-ctrl">
+                <input id="re-feed-filter" class="xp-input" placeholder="Filter coin or user..." />
+                <input id="re-feed-min" class="xp-input" type="number" min="0" step="25" placeholder="Min $" />
+                <select id="re-feed-side" class="xp-select"><option value="all">All</option><option value="BUY">Buys</option><option value="SELL">Sells</option></select>
+                <button class="xp-icon-btn" id="re-feed-clear" title="Clear feed"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg></button>
+            </div>
+            <div class="xp-feed-head"><span>TYPE</span><span>COIN</span><span>USER</span><span>VALUE</span><span>TIME</span></div>
+            <div id="re-feed-rows" class="xp-feed-rows"></div>
+        </div>
+    </div>
+    <div class="xp-col">
+        <div class="xp-card">
+            <div class="xp-card-hd">
+                <div><div class="xp-card-title"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/></svg>Market Radar</div><div class="xp-card-sub">Hot coins and whale activity</div></div>
+                <div style="display:flex;gap:5px">
+                    <select id="re-agg-window" class="xp-select" style="width:58px;height:26px;font-size:11px"><option value="300000">5m</option><option value="600000" selected>10m</option><option value="1800000">30m</option></select>
+                    <input id="re-whale-min" class="xp-input" style="width:66px;height:26px;font-size:11px" type="number" min="0" step="50" value="250" placeholder="$" />
                 </div>
             </div>
-            <div class="grid lg:grid-cols-3 gap-6 items-start">
-                <div class="space-y-6 lg:col-span-2">
-                    <div class="${cardCls}" data-re-section="dashboard">
-                        <div class="space-y-1.5 mb-4"><h2 class="font-semibold leading-none tracking-tight">Live Trade Feed</h2><p class="text-sm text-muted-foreground">Real-time platform-wide trades via WebSocket.</p></div>
-                        <div class="grid grid-cols-1 md:grid-cols-[1fr_120px_140px_auto] gap-2 mb-3">
-                            <input id="re-feed-filter" class="${inputCls}" placeholder="Filter by coin or user..." />
-                            <input id="re-feed-min" class="${inputCls}" type="number" min="0" step="25" placeholder="Min $" />
-                            <select id="re-feed-side" class="${inputCls}">
-                                <option value="all">All</option>
-                                <option value="BUY">Buys</option>
-                                <option value="SELL">Sells</option>
-                            </select>
-                            <button id="re-feed-pause" class="${btnCls}" style="height:36px;width:auto;padding:0 14px">Pause</button>
-                        </div>
-                        <div class="grid grid-cols-[46px_64px_1fr_auto_auto] gap-2 px-2 pb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground border-b"><span>Type</span><span>Coin</span><span>User</span><span>Value</span><span>Time</span></div>
-                        <div id="re-feed-rows" style="max-height:320px;overflow-y:auto"></div>
-                    </div>
-                    <div class="${cardCls}" data-re-section="dashboard">
-                        <div class="flex items-center justify-between mb-3">
-                            <div>
-                                <h2 class="font-semibold leading-none tracking-tight">Market Radar</h2>
-                                <p class="text-sm text-muted-foreground">Hot coins, whales, and session stats from the live stream.</p>
-                            </div>
-                            <div class="flex items-center gap-2">
-                                <select id="re-agg-window" class="${inputCls}" style="width:auto;height:34px;padding:0 10px">
-                                    <option value="300000">5m</option>
-                                    <option value="600000" selected>10m</option>
-                                    <option value="900000">15m</option>
-                                </select>
-                                <input id="re-whale-min" class="${inputCls}" style="width:120px;height:34px" type="number" min="0" step="25" value="250" placeholder="Whale $" />
-                            </div>
-                        </div>
-                        <div class="grid md:grid-cols-2 gap-4">
-                            <div>
-                                <div class="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Hot Coins</div>
-                                <div id="re-hot-body" class="re-mini-list"></div>
-                            </div>
-                            <div>
-                                <div class="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Whale Radar</div>
-                                <div id="re-whale-body" class="re-mini-list"></div>
-                            </div>
-                        </div>
-                        <div class="mt-4">
-                            <div class="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Session Stats</div>
-                            <div id="re-stats-body"></div>
-                        </div>
-                    </div>
-                    <div class="${cardCls}" data-re-section="reporter">
-                        <div class="space-y-1.5 mb-5"><h2 class="font-semibold leading-none tracking-tight flex items-center gap-2"><span class="relative flex h-3 w-3"><span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-destructive opacity-75"></span><span class="relative inline-flex rounded-full h-3 w-3 bg-destructive"></span></span>Rugpull Reporter</h2><p class="text-sm text-muted-foreground">Warn the community about malicious actors.</p></div>
-                        <div class="grid grid-cols-2 gap-4 mb-4"><div><label class="text-sm font-medium mb-2 block">Username</label><input id="re-rp-usr" class="${inputCls}" placeholder="e.g. scammer123" /></div><div><label class="text-sm font-medium mb-2 block">Coin Symbol</label><input id="re-rp-sym" class="${inputCls}" placeholder="e.g. SCAM" /></div></div>
-                        <div class="mb-4"><label class="text-sm font-medium mb-2 block">Evidence / Description</label><textarea id="re-rp-desc" class="${textareaCls}" placeholder="Describe the rugpull with evidence..." rows="3"></textarea></div>
-                        <button id="re-rp-sub" class="${btnCls}">Submit Report</button>
-                        <div id="re-rp-msg" class="text-sm mt-2 text-center h-4 font-medium transition-all"></div>
-                    </div>
-                    <div class="${cardCls} flex-1" data-re-section="reporter">
-                        <div class="space-y-1.5 mb-4 border-b pb-4"><h2 class="font-semibold leading-none tracking-tight">Community Reports</h2></div>
-                        <div id="re-rp-list" style="max-height:400px;overflow-y:auto" class="space-y-3 pr-1"></div>
-                        <div id="re-rp-pag" class="pt-4"></div>
-                    </div>
+            <div class="xp-agg-row" id="re-stats-body">
+                <div class="xp-agg-cell"><div class="xp-agg-v">—</div><div class="xp-agg-k">Window</div></div>
+                <div class="xp-agg-cell"><div class="xp-agg-v">0</div><div class="xp-agg-k">Trades</div></div>
+                <div class="xp-agg-cell"><div class="xp-agg-v">—</div><div class="xp-agg-k">Volume</div></div>
+                <div class="xp-agg-cell"><div class="xp-agg-v">—</div><div class="xp-agg-k">Avg</div></div>
+                <div class="xp-agg-cell"><div class="xp-agg-v">0/0</div><div class="xp-agg-k">B/S</div></div>
+            </div>
+            <div class="xp-card-body">
+                <div class="xp-radar-grid">
+                    <div><div class="xp-section-label">Hot Coins</div><div id="re-hot-body" class="xp-mini-list"></div></div>
+                    <div><div class="xp-section-label">Whale Radar</div><div id="re-whale-body" class="xp-mini-list"></div></div>
                 </div>
-                <div class="space-y-6">
-                    <div class="${cardCls}" data-re-section="alerts">
-                        <div class="space-y-1.5 mb-4"><h2 class="font-semibold leading-none tracking-tight">Price Alerts</h2><p class="text-sm text-muted-foreground">Get notified when coins hit your targets.</p></div>
-                        <div class="space-y-2 mb-3">
-                            <input id="re-al-sym" class="${inputCls}" placeholder="Coin symbol..." />
-                            <input id="re-al-px" class="${inputCls}" type="number" step="any" min="0" placeholder="Target price (USD)..." />
-                            <select id="re-al-dir" class="${inputCls}"><option value="above">Notify when above</option><option value="below">Notify when below</option></select>
-                            <button id="re-al-add" class="${btnCls}">Set Alert</button>
-                        </div>
-                        <div id="re-al-body" class="space-y-2 mt-3"></div>
-                    </div>
-                    <div class="${cardCls}" data-re-section="settings">
-                        <div class="space-y-1.5 mb-5"><h2 class="font-semibold leading-none tracking-tight">Preferences</h2><p class="text-sm text-muted-foreground">Customize your experience.</p></div>
-                        ${togRow('re-tog-notifications', 'Notification Badges', 'Show unread count on sidebar icon')}
-                        ${togRow('re-tog-adblock', 'Ad Blocker', 'Hide ads across Rugplay')}
-                        ${togRow('re-tog-offline', 'Appear Offline', 'Hide your online status')}
-                        ${togRow('re-tog-sticky', 'Sticky Portfolio', 'Pin portfolio to sidebar bottom')}
-                        ${togRow('re-tog-pnl', 'Show P&L', 'Show session profit/loss in sidebar')}
-                        ${togRow('re-tog-risk', 'Risk Scoring', 'Show rugpull risk on coin pages')}
-                        ${togRow('re-tog-bot', 'Bot Detection', 'Warn on suspicious trade patterns')}
-                        ${togRow('re-tog-volume', 'Volume Spikes', 'Alert on abnormal volume activity')}
-                        ${togRow('re-tog-desktop', 'Desktop Notifications', 'Browser push notifications for alerts')}
-                        ${togRow('re-tog-compact', 'Compact Mode', 'Tighten spacing across the UI')}
-                        ${togRow('re-tog-dark', 'Force Dark Mode', 'Force Rugplay into dark theme')}
-                        ${togRow('re-tog-auto', 'Auto-open Panel', 'Open Enhanced automatically on load')}
-                        <div class="mt-4 pt-4 border-t space-y-3">
-                        <button id="re-feedback-btn" class="${btnCls}" style="background:hsl(var(--accent))!important;color:hsl(var(--accent-foreground))!important">💬 Feedback</button>
-                        </div>
-                        <div class="mt-2 pt-4 border-t text-xs text-muted-foreground flex justify-between items-center">
-                            <span>Rugplay Enhanced v${GM_info.script.version}</span>
-                            <div class="flex gap-3"><a href="https://github.com/devbyego/rugplay-enhanced" target="_blank" class="hover:text-foreground transition-colors">GitHub</a><a href="https://discord.com" target="_blank" class="hover:text-foreground transition-colors">Discord</a></div>
-                        </div>
-                    </div>
-                    <div class="${cardCls} py-4" data-re-section="settings">
-                        <div class="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Why Enhanced?</div>
-                        <p class="text-sm text-muted-foreground leading-relaxed">Price alerts, risk scoring, bot & volume alerts, session P&L, quick search, coin notes, rugpull reporter. Trade history & data use <strong>Rugplay’s own API</strong>—no third-party servers for your data.</p>
-                    </div>
-                    <div class="${cardCls} py-4" data-re-section="status">
-                        <div class="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Status</div>
-                        <div id="re-diag"></div>
-                    </div>
-                    <div id="re-changelog-card" class="${cardCls} min-h-[120px] flex flex-col justify-center" data-re-section="status"><div class="flex flex-col items-center gap-2 text-muted-foreground">${ICONS.loading}<span class="text-sm animate-pulse">Loading changelog...</span></div></div>
+            </div>
+        </div>
+    </div>
+</div>
+</div>
+
+<!-- WATCHLIST -->
+<div data-re-section="watchlist">
+<div class="xp-card">
+    <div class="xp-card-hd"><div><div class="xp-card-title"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>Watchlist</div><div class="xp-card-sub">Live prices via WebSocket</div></div></div>
+    <div class="xp-card-body">
+        <div style="display:flex;gap:7px;margin-bottom:12px">
+            <input id="re-wl-inp" class="xp-input" placeholder="Add coin symbol, e.g. BTC" style="flex:1"/>
+            <button id="re-wl-add-btn" class="xp-btn primary">Add</button>
+        </div>
+        <div id="re-wl-panel-body"></div>
+    </div>
+</div>
+</div>
+
+<!-- ALERTS -->
+<div data-re-section="alerts">
+<div class="xp-2col">
+    <div class="xp-col">
+        <div class="xp-card">
+            <div class="xp-card-hd"><div><div class="xp-card-title"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>Price Alerts</div><div class="xp-card-sub">Fires instantly on WebSocket price data</div></div></div>
+            <div class="xp-card-body">
+                <div class="xp-form-grid" style="grid-template-columns:1fr 1fr;margin-bottom:8px">
+                    <div class="xp-form-row"><label class="xp-label">Coin Symbol</label><input id="re-al-sym" class="xp-input" placeholder="DOGE" /></div>
+                    <div class="xp-form-row"><label class="xp-label">Target Price (USD)</label><input id="re-al-px" class="xp-input" type="number" step="any" min="0" placeholder="0.00" /></div>
                 </div>
-            </div>`;
+                <div class="xp-form-row" style="margin-bottom:10px"><label class="xp-label">Trigger</label><select id="re-al-dir" class="xp-select"><option value="above">Notify when above</option><option value="below">Notify when below</option></select></div>
+                <button id="re-al-add" class="xp-btn primary xp-btn-full" style="height:32px;margin-bottom:12px"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Set Alert</button>
+                <div id="re-al-body" style="display:flex;flex-direction:column;gap:5px"></div>
+            </div>
+        </div>
+    </div>
+    <div class="xp-col">
+        <div class="xp-card" style="border-color:rgba(245,158,11,.14)">
+            <div class="xp-card-body">
+                <div style="font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.09em;color:var(--xp-amber);margin-bottom:9px">Tips</div>
+                <div style="font-size:12px;color:var(--xp-t2);line-height:1.7;display:flex;flex-direction:column;gap:5px">
+                    <div>Alerts fire with zero delay via WebSocket</div>
+                    <div>Enable Desktop Notifications in Mods for browser popups</div>
+                    <div>Set alerts before leaving — never miss a pump</div>
+                    <div>Pair with Bot Detection for early rug warnings</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+</div>
+
+<!-- REPORTER -->
+<div data-re-section="reporter">
+<div class="xp-2col">
+    <div class="xp-col">
+        <div class="xp-card">
+            <div class="xp-card-hd"><div><div class="xp-card-title"><div class="xp-live-dot" style="background:var(--xp-red)"></div>File a Report</div><div class="xp-card-sub">Warn the community via the Enhanced network</div></div></div>
+            <div class="xp-card-body">
+                <div class="xp-form-grid" style="grid-template-columns:1fr 1fr;margin-bottom:8px">
+                    <div class="xp-form-row"><label class="xp-label">Username</label><input id="re-rp-usr" class="xp-input" placeholder="scammer123" /></div>
+                    <div class="xp-form-row"><label class="xp-label">Coin Symbol</label><input id="re-rp-sym" class="xp-input" placeholder="SCAM" /></div>
+                </div>
+                <div class="xp-form-row" style="margin-bottom:10px"><label class="xp-label">Evidence</label><textarea id="re-rp-desc" class="xp-textarea" placeholder="Describe the rugpull with as much detail as possible..." rows="4"></textarea></div>
+                <button id="re-rp-sub" class="xp-btn primary xp-btn-full" style="height:34px">Submit Report</button>
+                <div id="re-rp-msg" style="font-size:12px;text-align:center;margin-top:7px;min-height:16px;font-weight:600"></div>
+            </div>
+        </div>
+    </div>
+    <div class="xp-col">
+        <div class="xp-card">
+            <div class="xp-card-hd"><div class="xp-card-title">Community Reports</div></div>
+            <div id="re-rp-list" style="max-height:360px;overflow-y:auto;padding:10px 14px;display:flex;flex-direction:column;gap:7px"></div>
+            <div id="re-rp-pag" class="xp-pag"></div>
+        </div>
+    </div>
+</div>
+</div>
+
+<!-- MODS -->
+<div data-re-section="mods" style="margin:-20px -24px;padding:0">
+    <div class="xp-mods-top">
+        <div class="xp-mods-sw">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input type="text" id="re-mods-search" class="xp-input xp-mods-si" placeholder="Search mods..." autocomplete="off" style="height:30px" />
+        </div>
+        <span class="xp-mods-count" id="re-mods-count">${MODS.length} mods</span>
+        <button id="re-mods-all-on" class="xp-btn" style="height:28px;font-size:11px">All on</button>
+        <button id="re-mods-all-off" class="xp-btn danger" style="height:28px;font-size:11px">All off</button>
+    </div>
+    <div class="xp-cat-filter" id="re-mods-filter-row">
+        <button class="xp-cat-btn active" data-cat="All">All</button>
+        ${CATS.map(c => '<button class="xp-cat-btn" data-cat="' + c + '">' + c + '</button>').join('')}
+    </div>
+    <div class="xp-mods-body" id="re-mods-body">${modsHTML}</div>
+</div>
+
+<!-- COMPARE -->
+<div data-re-section="features">
+<div class="xp-card">
+    <div class="xp-card-hd"><div><div class="xp-card-title">Enhanced vs Rugplay Plus</div><div class="xp-card-sub">Every advantage, including the ones they do not want you to know</div></div></div>
+    <div style="overflow-x:auto">
+        <table class="xp-cmp">
+            <thead><tr><th style="width:44%">Feature</th><th class="ours">Enhanced (Free)</th><th>Rugplay Plus (Paid)</th></tr></thead>
+            <tbody>
+                <tr><td>Price Alerts</td><td class="ours ck">✓</td><td class="cx">✗</td></tr>
+                <tr><td>Live Watchlist</td><td class="ours ck">✓</td><td class="cx">✗</td></tr>
+                <tr><td>50+ Toggleable Mods</td><td class="ours ck">✓</td><td class="cx">✗</td></tr>
+                <tr><td>Local Risk Scoring</td><td class="ours ck">✓</td><td class="cx">✗</td></tr>
+                <tr><td>Market Radar / Hot Coins</td><td class="ours ck">✓</td><td class="cx">✗</td></tr>
+                <tr><td>Bot Detection</td><td class="ours ck">✓</td><td class="cx">✗</td></tr>
+                <tr><td>Volume Spike Alerts</td><td class="ours ck">✓</td><td class="cx">✗</td></tr>
+                <tr><td>Session P&amp;L Tracker</td><td class="ours ck">✓</td><td class="cx">✗</td></tr>
+                <tr><td>Coin Notes (local)</td><td class="ours ck">✓</td><td class="cx">✗</td></tr>
+                <tr><td>Quick Search (Ctrl+K)</td><td class="ours ck">✓</td><td class="cx">✗</td></tr>
+                <tr><td>Watch buttons on pages</td><td class="ours ck">✓</td><td class="cx">✗</td></tr>
+                <tr><td>Privacy mods (blur, hide balance)</td><td class="ours ck">✓</td><td class="cx">✗</td></tr>
+                <tr><td>Rugpull Reporter</td><td class="ours ck">✓</td><td class="ck">✓</td></tr>
+                <tr><td>Live Transaction Card</td><td class="ours ck">✓</td><td class="ck">✓</td></tr>
+                <tr><td>User Tags</td><td class="ours ck">✓</td><td class="ck">✓</td></tr>
+                <tr><td>Trade History Modal</td><td class="ours ck">✓</td><td class="ck">✓</td></tr>
+                <tr><td>Ad Blocker</td><td class="ours ck">✓</td><td class="ck">✓</td></tr>
+                <tr class="warn"><td class="bad">Silently tracks your username</td><td class="ours ck">Never</td><td class="bad">YES</td></tr>
+                <tr class="warn"><td class="bad">Breaks when their API goes down</td><td class="ours ck">Never</td><td class="bad">YES</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+</div>
+
+<!-- STATUS -->
+<div data-re-section="status">
+<div class="xp-2col">
+    <div class="xp-col">
+        <div class="xp-card"><div class="xp-card-hd"><div class="xp-card-title">System Diagnostics</div></div><div class="xp-card-body"><div id="re-diag"></div></div></div>
+    </div>
+    <div class="xp-col">
+        <div id="re-changelog-card" class="xp-card"><div class="xp-card-hd"><div class="xp-card-title">What's New</div></div><div class="xp-loading"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="xp-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>Loading...</div></div>
+    </div>
+</div>
+</div>
+
+</div><!-- /xp-body -->
+
+<div class="xp-footer">
+    <span>Rugplay Enhanced v${GM_info.script.version} · by <a href="https://github.com/devbyego/rugplay-enhanced" target="_blank" class="xp-flink">devbyego</a></span>
+    <div class="xp-footer-links">
+        <a href="https://github.com/devbyego/rugplay-enhanced" target="_blank" class="xp-flink">GitHub</a>
+        <button id="re-feedback-btn-footer" class="xp-flink">Feedback</button>
+    </div>
+</div>
+
+</div>`;
         },
         _attachListeners() {
             const applyTab = (tab) => {
                 const t = tab || 'dashboard';
                 store.cfg('panelTab', t);
-                document.querySelectorAll('.re-tab[data-re-tab]').forEach(b => b.classList.toggle('active', b.dataset.reTab === t));
+                // Match both old .re-tab and new .xp-tab buttons
+                document.querySelectorAll('.re-tab[data-re-tab], .xp-tab[data-re-tab]').forEach(b => {
+                    b.classList.toggle('active', b.dataset.reTab === t);
+                });
                 document.querySelectorAll('[data-re-section]').forEach(el => {
                     const sec = el.getAttribute('data-re-section');
-                    el.style.display = (sec === t) ? '' : 'none';
+                    const secs = sec ? sec.split(',').map(x => x.trim()) : [];
+                    const show = secs.includes(t) || secs.includes('*');
+                    // Use explicit 'block'/'flex' instead of '' so CSS display:none is actually overridden
+                    el.style.display = show ? (el.classList.contains('xp-2col') ? 'grid' : 'block') : 'none';
                 });
+                if (t === 'watchlist') watchlist.renderPanel();
             };
-            document.querySelectorAll('.re-tab[data-re-tab]').forEach(b => b.addEventListener('click', () => applyTab(b.dataset.reTab)));
+            document.querySelectorAll('.re-tab[data-re-tab], .xp-tab[data-re-tab]').forEach(b => b.addEventListener('click', () => applyTab(b.dataset.reTab)));
+            document.getElementById('re-wl-add-btn')?.addEventListener('click', () => {
+                const inp = document.getElementById('re-wl-inp');
+                const sym = (inp?.value || '').trim().toUpperCase();
+                if (!sym) return;
+                watchlist.add(sym);
+                if (inp) inp.value = '';
+                watchlist.renderPanel();
+                ['re-stat-wl','xp-tab-wl'].forEach(id=>{const el=document.getElementById(id);if(el)el.textContent=store.get('re:wl',[]).length||'';});
+            });
+            document.getElementById('re-feed-clear')?.addEventListener('click', () => { liveFeed.trades=[]; liveFeed.render(); ['re-stat-trades','xp-stat-trades'].forEach(id=>{const el=document.getElementById(id);if(el)el.textContent='0';}); });
             document.getElementById('re-feed-filter')?.addEventListener('input', utils.debounce(() => liveFeed.render(), 150));
             document.getElementById('re-feed-min')?.addEventListener('input', utils.debounce(() => liveFeed.render(), 150));
             document.getElementById('re-feed-side')?.addEventListener('change', () => liveFeed.render());
@@ -1184,41 +2215,110 @@
             document.getElementById('re-al-add')?.addEventListener('click', () => { const sym = document.getElementById('re-al-sym')?.value.trim().toUpperCase(); const px = document.getElementById('re-al-px')?.value.trim(); const dir = document.getElementById('re-al-dir')?.value; if (!sym || !px) { notifier.err('Fill in symbol and price'); return; } alertEngine.add(sym, px, dir); document.getElementById('re-al-sym').value = ''; document.getElementById('re-al-px').value = ''; this._renderAlerts(); });
             document.getElementById('re-rp-sub')?.addEventListener('click', () => this._submitReport());
             document.getElementById('re-feedback-btn')?.addEventListener('click', () => this._showFeedbackModal());
+            document.getElementById('re-feedback-btn-footer')?.addEventListener('click', () => this._showFeedbackModal());
             this._renderAlerts();
             this._loadReports(1);
             dashboard.render();
             diagnostics.pingApi().finally(() => diagnostics.render());
             diagnostics.render();
-            applyTab(store.settings().panelTab || store.get('re:panelTab', null) || 'dashboard');
-            const toggleMap = {
-                're-tog-notifications': ['notifications'],
-                're-tog-adblock': ['adblock'],
-                're-tog-offline': ['appearOffline'],
-                're-tog-sticky': ['stickyPortfolio'],
-                're-tog-pnl': ['showPnL'],
-                're-tog-risk': ['riskScore'],
-                're-tog-bot': ['botWarning'],
-                're-tog-volume': ['volumeSpikes'],
-                're-tog-desktop': ['desktopAlerts'],
-                're-tog-compact': ['compactMode'],
-                're-tog-dark': ['forceDark'],
-                're-tog-auto': ['autoOpenPanel'],
-            };
-            Object.entries(toggleMap).forEach(([id, [key]]) => {
-                document.getElementById(id)?.addEventListener('click', e => {
-                    const cur = store.settings()[key]; const next = !cur;
+            applyTab(store.settings().panelTab || 'dashboard');
+
+            // ── MOD CARD TOGGLES (event delegation on the mods body) ────────
+            const modsBody = document.getElementById('re-mods-body');
+            if (modsBody) {
+                modsBody.addEventListener('click', e => {
+                    const btn = e.target.closest('.xp-toggle,.re-mod-toggle');
+                    if (!btn) return;
+                    const key = btn.dataset.modKey;
+                    if (!key) return;
+                    const cur = !!store.settings()[key];
+                    const next = !cur;
                     store.cfg(key, next);
-                    e.currentTarget.setAttribute('aria-checked', String(next));
-                    e.currentTarget.innerHTML = next ? ICONS_TOGGLE.on : ICONS_TOGGLE.off;
+                    // Update toggle button state
+                    btn.classList.toggle('on', next);
+                    btn.setAttribute('aria-checked', String(next));
+                    const card = btn.closest('.xp-mod-card,.re-mod-card');
+                    if (card) {
+                        card.classList.toggle('on', next);
+                        card.classList.toggle('off', !next);
+                        const statusEl = card.querySelector('.re-mod-status');
+                        if (statusEl) { statusEl.textContent = next ? 'ENABLED' : 'DISABLED'; statusEl.className = 're-mod-status ' + (next ? 'on' : 'off'); }
+                    }
+                    // Update header count
+                    const s2 = store.settings();
+                    const allMods = modsBody.querySelectorAll('.xp-toggle,.re-mod-toggle');
+                    const enabledCount = Array.from(allMods).filter(b => b.classList.contains('on')).length;
+                    const countEl = document.querySelector('.re-tab[data-re-tab="mods"] .re-tab-count');
+                    if (countEl) countEl.textContent = enabledCount + '/' + allMods.length;
                     settingsEngine.applyAll();
                 });
+            }
+
+            // ── MODS SEARCH ─────────────────────────────────────────────────
+            const modsSearch = document.getElementById('re-mods-search');
+            const modsCount = document.getElementById('re-mods-count');
+            const filterMods = () => {
+                const q = (modsSearch?.value || '').toLowerCase();
+                const activeCat = document.querySelector('.re-mods-filter-btn.active')?.dataset.cat || 'All';
+                let visible = 0;
+                document.querySelectorAll('.xp-mod-card,.re-mod-card').forEach(card => {
+                    const key = card.dataset.modKey;
+                    const name = (card.querySelector('.re-mod-name')?.textContent || '').toLowerCase();
+                    const desc = (card.querySelector('.re-mod-desc')?.textContent || '').toLowerCase();
+                    const cat = (card.querySelector('.re-mod-cat-tag')?.textContent || '');
+                    const matchQ = !q || name.includes(q) || desc.includes(q) || key.toLowerCase().includes(q);
+                    const matchCat = activeCat === 'All' || cat === activeCat;
+                    const show = matchQ && matchCat;
+                    card.style.display = show ? '' : 'none';
+                    if (show) visible++;
+                });
+                // Hide empty category headers
+                document.querySelectorAll('.xp-cat-block,.re-mod-category').forEach(cat => {
+                    const visibleCards = cat.querySelectorAll('.re-mod-card:not([style*="display: none"]):not([style*="display:none"])');
+                    cat.style.display = visibleCards.length ? '' : 'none';
+                });
+                if (modsCount) modsCount.textContent = visible + ' mod' + (visible !== 1 ? 's' : '');
+            };
+            modsSearch?.addEventListener('input', utils.debounce(filterMods, 150));
+
+            // ── MODS CATEGORY FILTER ────────────────────────────────────────
+            document.getElementById('re-mods-filter-row')?.addEventListener('click', e => {
+                const btn = e.target.closest('.re-mods-filter-btn');
+                if (!btn) return;
+                document.querySelectorAll('.re-mods-filter-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                filterMods();
+            });
+
+            // ── ALL ON / ALL OFF ────────────────────────────────────────────
+            document.getElementById('re-mods-all-on')?.addEventListener('click', () => {
+                document.querySelectorAll('.xp-toggle,.re-mod-toggle').forEach(btn => {
+                    const key = btn.dataset.modKey;
+                    if (!key) return;
+                    store.cfg(key, true);
+                    btn.classList.add('on'); btn.setAttribute('aria-checked', 'true');
+                    const card = btn.closest('.re-mod-card');
+                    if (card) { card.classList.add('on'); card.classList.remove('off'); const s = card.querySelector('.re-mod-status'); if (s) { s.textContent='ENABLED'; s.className='re-mod-status on'; } }
+                });
+                settingsEngine.applyAll();
+            });
+            document.getElementById('re-mods-all-off')?.addEventListener('click', () => {
+                document.querySelectorAll('.xp-toggle,.re-mod-toggle').forEach(btn => {
+                    const key = btn.dataset.modKey;
+                    if (!key) return;
+                    store.cfg(key, false);
+                    btn.classList.remove('on'); btn.setAttribute('aria-checked', 'false');
+                    const card = btn.closest('.re-mod-card');
+                    if (card) { card.classList.remove('on'); card.classList.add('off'); const s = card.querySelector('.re-mod-status'); if (s) { s.textContent='DISABLED'; s.className='re-mod-status off'; } }
+                });
+                settingsEngine.applyAll();
             });
         },
         _renderAlerts() {
             const el = document.getElementById('re-al-body'); if (!el) return;
             const al = store.alerts();
-            if (!al.length) { el.innerHTML = '<p class="text-sm text-muted-foreground text-center py-2">No alerts set. Add one above.</p>'; return; }
-            el.innerHTML = al.map(a => `<div class="flex items-center gap-2 rounded-lg border p-3 ${a.done ? 'opacity-60' : ''}"><div class="flex-1"><div class="font-semibold text-sm">${a.sym}</div><div class="text-xs text-muted-foreground">${a.dir} ${utils.usd(a.px)}${a.done ? ` · Triggered ${utils.ago(a.hitAt)}` : ''}</div></div><button class="re-al-del text-muted-foreground hover:text-destructive transition-colors p-1 rounded" data-id="${a.id}">${ICONS.close}</button></div>`).join('');
+            if (!al.length) { el.innerHTML = '<div class="xp-empty">No alerts set yet. Add one above.</div>'; return; }
+            el.innerHTML = al.map(a => `<div class="xp-al-row${a.done?' done':''}"><div class="xp-al-info"><div class="xp-al-sym">${a.sym}</div><div class="xp-al-meta">${a.dir} ${utils.usd(a.px)}${a.done?' · Triggered '+utils.ago(a.hitAt):''}</div></div><button class="xp-al-del" data-id="${a.id}"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>`).join('');
             el.querySelectorAll('.re-al-del').forEach(b => b.onclick = () => { alertEngine.del(b.dataset.id); this._renderAlerts(); });
         },
         async _loadReports(pg = 1) {
@@ -1228,7 +2328,7 @@
                 const r = await api.get(`/v1/reports?page=${pg}&limit=8`); if (r.status !== 'success') throw 0;
                 const rpts = r.data?.reports || [];
                 if (!rpts.length) { list.innerHTML = '<p class="text-muted-foreground text-sm text-center p-6">No reports yet.</p>'; return; }
-                list.innerHTML = rpts.map(rp => `<div class="bg-muted/40 border border-border rounded-lg p-3" data-id="${rp.id}"><div class="flex items-center gap-2 mb-1"><span class="font-semibold text-sm">${rp.reported_username}</span><span class="text-primary font-mono text-xs">*${rp.coin_symbol}</span></div><p class="text-sm text-muted-foreground mb-2 line-clamp-2">${rp.description}</p><div class="flex items-center gap-3 text-xs"><button class="re-vote flex items-center gap-1 hover:text-green-500 transition-colors" data-id="${rp.id}" data-t="upvote">▲ ${rp.upvotes || 0}</button><button class="re-vote flex items-center gap-1 hover:text-red-500 transition-colors" data-id="${rp.id}" data-t="downvote">▼ ${rp.downvotes || 0}</button><span class="text-muted-foreground ml-auto">${utils.ago(rp.created_at)}</span></div></div>`).join('');
+                list.innerHTML = rpts.map(rp=>`<div class="xp-rp-row" data-id="${rp.id}"><div class="xp-rp-hd"><span class="xp-rp-user">${rp.reported_username}</span><span class="xp-rp-coin">*${rp.coin_symbol}</span><span class="xp-rp-time">${utils.ago(rp.created_at)}</span></div><p class="xp-rp-body">${rp.description}</p><div class="xp-rp-foot"><button class="xp-vote up re-vote" data-id="${rp.id}" data-t="upvote">▲ ${rp.upvotes||0}</button><button class="xp-vote dn re-vote" data-id="${rp.id}" data-t="downvote">▼ ${rp.downvotes||0}</button></div></div>`).join('');
                 list.querySelectorAll('.re-vote').forEach(b => b.onclick = async () => { try { await api.post('/v1/reports/vote', { id: b.dataset.id, type: b.dataset.t }); notifier.ok('Vote recorded'); this._loadReports(pg); } catch { notifier.err('Already voted or failed'); } });
                 const pag = document.getElementById('re-rp-pag'); const p = r.data?.pagination;
                 if (pag && p && p.total_pages > 1) { pag.innerHTML = ''; const mkBtn = (lbl, page, dis = false) => { const b = document.createElement('button'); b.textContent = lbl; b.className = 'inline-flex items-center justify-center text-sm font-medium h-9 px-3 rounded-md hover:bg-accent hover:text-accent-foreground transition-colors'; if (dis) { b.setAttribute('disabled', ''); b.style.opacity = '.4'; } else b.onclick = () => this._loadReports(page); return b; }; pag.classList.add('flex', 'justify-center', 'items-center', 'gap-2'); pag.appendChild(mkBtn('«', p.current_page - 1, p.current_page === 1)); const inf = document.createElement('span'); inf.className = 'text-sm text-muted-foreground'; inf.textContent = `${p.current_page} / ${p.total_pages}`; pag.appendChild(inf); pag.appendChild(mkBtn('»', p.current_page + 1, p.current_page >= p.total_pages)); }
@@ -1284,9 +2384,10 @@
         _loadChangelog() {
             const card = document.getElementById('re-changelog-card'); if (!card) return;
             api.get(`/v1/changelog?version=${GM_info.script.version}`).then(r => {
-                if (r.status === 'success' && r.data) { card.innerHTML = `<div class="space-y-1.5 mb-4 border-b pb-4"><h2 class="font-semibold leading-none tracking-tight">What's New in v${r.data.version}</h2><p class="text-xs text-muted-foreground">${new Date(r.data.date).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}</p></div><ul class="space-y-2 text-sm text-muted-foreground pl-4 list-disc">${r.data.changes.map(c => `<li>${c}</li>`).join('')}</ul>`; }
-                else card.innerHTML = '<div class="text-sm text-muted-foreground text-center">No changelog available</div>';
-            }).catch(() => { card.innerHTML = '<div class="text-sm text-destructive text-center">Failed to load changelog</div>'; });
+                if (r.status === 'success' && r.data) {
+                    card.innerHTML = `<div class="xp-card-hd"><div class="xp-card-title">What\'s New in v${r.data.version}</div><span style="font-size:10px;color:#52525b">${new Date(r.data.date).toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'})}</span></div><div style="padding:12px 14px;display:flex;flex-direction:column;gap:0">${r.data.changes.map(c=>'<div style="display:flex;gap:8px;padding:6px 0;border-bottom:1px solid rgba(255,255,255,.06)"><span style="width:5px;height:5px;border-radius:50%;background:#52525b;flex-shrink:0;margin-top:5px"></span><span style="font-size:12px;color:#a1a1aa;line-height:1.5">'+c+'</span></div>').join('')}</div>`;
+                } else { card.innerHTML = '<div class="xp-empty">No changelog available</div>'; }
+            }).catch(() => { card.innerHTML = '<div class="xp-empty" style="color:#ef4444">Failed to load changelog</div>'; });
         },
         _showFeedbackModal() {
             let ov = document.getElementById(CONFIG.ids.feedbackModal);
@@ -1316,43 +2417,122 @@
     };
 
     const sidebarEnhancer = {
-        done: false,
+        _enhancedOk: false,
+        _searchOk: false,
+
+        // Find the sidebar menu list using every selector Rugplay has ever used
+        _getMenuList() {
+            return document.querySelector('ul[data-sidebar="menu"]')
+                || document.querySelector('nav ul')
+                || document.querySelector('[data-sidebar="content"] ul')
+                || null;
+        },
+
+        // Find the first real nav item that has both an <a> and a <span> inside
+        _getFirstItem(menuList) {
+            if (!menuList) return null;
+            const items = menuList.querySelectorAll('li[data-sidebar="menu-item"], li');
+            for (const li of items) {
+                const a = li.querySelector('a');
+                const span = li.querySelector('span');
+                if (a && span && span.textContent.trim()) return li;
+            }
+            return null;
+        },
+
+        // Replace the SVG inside an <a> element with new SVG HTML
+        _replaceSvg(a, svgHtml) {
+            const existing = a.querySelector('svg');
+            if (existing) {
+                // Use insertAdjacentHTML instead of outerHTML to reliably replace
+                const tmp = document.createElement('span');
+                tmp.innerHTML = svgHtml;
+                const newSvg = tmp.firstElementChild;
+                if (newSvg) existing.replaceWith(newSvg);
+            } else {
+                // Prepend the SVG if none exists
+                const tmp = document.createElement('span');
+                tmp.innerHTML = svgHtml;
+                const newSvg = tmp.firstElementChild;
+                if (newSvg) a.prepend(newSvg);
+            }
+        },
+
         create() {
-            if (this.done) return true;
-            const homeBtn = document.querySelector('a[data-sidebar="menu-button"][href="/"], a[href="/"].peer\\/menu-button, a[href="/"][data-sidebar="menu-button"]');
-            const firstItem = homeBtn?.closest('li[data-sidebar="menu-item"]') || document.querySelector('li[data-sidebar="menu-item"]:first-child');
-            if (!firstItem) return false;
-            const menuList = firstItem.closest('ul[data-sidebar="menu"]') || document.querySelector('ul[data-sidebar="menu"]');
+            const menuList = this._getMenuList();
             if (!menuList) return false;
-            if (!document.getElementById(CONFIG.ids.enhancedBtn)) {
-                const li = firstItem.cloneNode(true);
-                const btn = li.querySelector('a');
-                if (!btn) return false;
-                btn.id = CONFIG.ids.enhancedBtn;
-                btn.href = 'https://rugplay.com/#rugplay-enhanced';
-                btn.removeAttribute('data-active');
-                const svg = btn.querySelector('svg'); if (svg) svg.outerHTML = ICONS.enhanced;
-                const span = btn.querySelector('span'); if (span) span.textContent = 'Enhanced';
-                btn.addEventListener('click', e => {
-                    e.preventDefault();
-                    enhancedPanel.show();
-                });
-                firstItem.insertAdjacentElement('afterend', li);
+
+            const firstItem = this._getFirstItem(menuList);
+            if (!firstItem) return false;
+
+            // ── Inject "Enhanced" button ────────────────────────────────────
+            const existingEnhBtn = document.getElementById(CONFIG.ids.enhancedBtn);
+            if (!this._enhancedOk && !existingEnhBtn) {
+                try {
+                    const li = firstItem.cloneNode(true);
+                    // Remove any active/current indicators from the clone
+                    li.querySelectorAll('[data-active],[aria-current],[class*="active"]').forEach(el => {
+                        el.removeAttribute('data-active');
+                        el.removeAttribute('aria-current');
+                    });
+                    const btn = li.querySelector('a');
+                    if (!btn) return false;
+                    btn.id = CONFIG.ids.enhancedBtn;
+                    btn.href = '#rugplay-enhanced';
+                    btn.removeAttribute('data-active');
+                    btn.removeAttribute('aria-current');
+                    this._replaceSvg(btn, ICONS.enhanced);
+                    const span = Array.from(btn.querySelectorAll('span')).find(s => !s.classList.contains('sr-only') && !/sr-?only|screen-?reader/i.test(s.className)) || btn.querySelector('span');
+                    if (span) span.textContent = 'Enhanced';
+                    btn.addEventListener('click', e => {
+                        e.preventDefault();
+                        if (enhancedPanel.isVisible) enhancedPanel.hide();
+                        else enhancedPanel.show();
+                    });
+                    firstItem.insertAdjacentElement('afterend', li);
+                    this._enhancedOk = true;
+                } catch(err) {
+                    return false;
+                }
+            } else if (existingEnhBtn && menuList.contains(existingEnhBtn)) {
+                this._enhancedOk = true;
             }
-            if (!document.getElementById(CONFIG.ids.searchBtn)) {
-                const li2 = firstItem.cloneNode(true);
-                const btn2 = li2.querySelector('a');
-                if (!btn2) return false;
-                btn2.id = CONFIG.ids.searchBtn;
-                btn2.href = '#';
-                btn2.removeAttribute('data-active');
-                const svg2 = btn2.querySelector('svg'); if (svg2) svg2.outerHTML = ICONS.search;
-                const span2 = btn2.querySelector('span'); if (span2) span2.textContent = 'Quick Search';
-                btn2.addEventListener('click', e => { e.preventDefault(); quickSearch.toggle(); });
-                menuList.appendChild(li2);
+
+            // ── Inject "Quick Search" button ────────────────────────────────
+            const existingSearchBtn = document.getElementById(CONFIG.ids.searchBtn);
+            if (!store.settings().sidebarSearch) {
+                // If disabled, remove button if it exists and mark as not injected
+                if (existingSearchBtn) { existingSearchBtn.closest('li')?.remove(); }
+                this._searchOk = false;
+                return this._enhancedOk;
             }
-            this.done = true;
-            return true;
+            if (!this._searchOk && !existingSearchBtn) {
+                try {
+                    const li2 = firstItem.cloneNode(true);
+                    li2.querySelectorAll('[data-active],[aria-current]').forEach(el => {
+                        el.removeAttribute('data-active');
+                        el.removeAttribute('aria-current');
+                    });
+                    const btn2 = li2.querySelector('a');
+                    if (!btn2) return false;
+                    btn2.id = CONFIG.ids.searchBtn;
+                    btn2.href = '#';
+                    btn2.removeAttribute('data-active');
+                    btn2.removeAttribute('aria-current');
+                    this._replaceSvg(btn2, ICONS.search);
+                    const span2 = Array.from(btn2.querySelectorAll('span')).find(s => !s.classList.contains('sr-only') && !/sr-?only|screen-?reader/i.test(s.className)) || btn2.querySelector('span');
+                    if (span2) span2.textContent = 'Quick Search';
+                    btn2.addEventListener('click', e => { e.preventDefault(); quickSearch.toggle(); });
+                    menuList.appendChild(li2);
+                    this._searchOk = true;
+                } catch(err) {
+                    return false;
+                }
+            } else if (existingSearchBtn && menuList.contains(existingSearchBtn)) {
+                this._searchOk = true;
+            }
+
+            return this._enhancedOk && this._searchOk;
         },
     };
 
@@ -1365,100 +2545,333 @@
     };
 
     GM_addStyle(`
-        :root{--re-radius:16px;--re-border: hsl(var(--border)/0.7);--re-glass: hsl(var(--background)/0.55)}
-        #${CONFIG.ids.panelWrapper}{padding-top:22px!important}
-        #${CONFIG.ids.panelWrapper} .bg-card{border-radius:var(--re-radius)!important;border-color:var(--re-border)!important}
-        #${CONFIG.ids.panelWrapper} .shadow-sm{box-shadow:0 8px 24px rgba(0,0,0,.06)!important}
-        #${CONFIG.ids.panelWrapper} h2{letter-spacing:-.01em}
-        #${CONFIG.ids.panelWrapper} .text-muted-foreground{opacity:.92}
-        #${CONFIG.ids.panelWrapper} input,#${CONFIG.ids.panelWrapper} select,#${CONFIG.ids.panelWrapper} textarea{border-radius:12px!important}
-        #${CONFIG.ids.panelWrapper} .re-panel-btn{border-radius:12px!important}
-        #${CONFIG.ids.panelWrapper} .re-tabs{position:sticky;top:10px;z-index:50;background:linear-gradient(to bottom, hsl(var(--background)) 50%, transparent);padding:8px 0 10px;backdrop-filter:blur(8px)}
-        #${CONFIG.ids.panelWrapper} .re-tab{padding:7px 12px}
-        #${CONFIG.ids.panelWrapper} .re-tab.active{box-shadow:0 10px 30px rgba(0,0,0,.14)}
-        #${CONFIG.ids.panelWrapper} .re-mini-row{border-radius:14px}
-        #${CONFIG.ids.panelWrapper} .re-stat{border-radius:14px}
-        #${CONFIG.ids.panelWrapper} .re-feed-row{border-radius:12px;margin:6px 6px 0 6px;border:1px solid hsl(var(--border)/0.5)}
-        #${CONFIG.ids.panelWrapper} .re-feed-row:hover{background:hsl(var(--accent)/0.35)}
-        #${CONFIG.ids.panelWrapper} #re-feed-rows{padding-bottom:8px}
-        #re-notifier{position:fixed;top:20px;right:20px;z-index:99999;display:flex;flex-direction:column-reverse;gap:10px;pointer-events:none;width:360px}
-        .re-notif{background:hsl(var(--background));color:hsl(var(--foreground));border:1px solid hsl(var(--border));border-radius:12px;box-shadow:0 4px 16px rgba(0,0,0,.18);display:flex;align-items:flex-start;padding:14px;gap:12px;position:relative;opacity:0;transform:translateY(16px) scale(.96);animation:re-notif-in .25s cubic-bezier(.16,1,.3,1) forwards;pointer-events:all}
-        .re-notif-out{animation:re-notif-out .2s ease-in forwards}
         @keyframes re-notif-in{to{opacity:1;transform:none}}
-        @keyframes re-notif-out{from{opacity:1;transform:none}to{opacity:0;transform:translateY(16px) scale(.96)}}
-        .re-notif-icon{flex-shrink:0;margin-top:2px}
-        .re-notif-body{flex:1}
-        .re-notif-title{font-weight:600;font-size:13px;margin-bottom:3px}
-        .re-notif-desc{font-size:12px;color:hsl(var(--muted-foreground));line-height:1.4}
-        .re-notif-close{position:absolute;top:8px;right:8px;background:none;border:none;cursor:pointer;color:hsl(var(--muted-foreground));padding:3px 6px;border-radius:4px;font-size:12px;line-height:1}
-        .re-notif-close:hover{background:hsl(var(--accent))}
-        .re-notif-actions{display:flex;gap:8px;margin-top:10px}
-        .re-notif-btn{border:none;border-radius:6px;padding:5px 12px;font-size:12px;font-weight:500;cursor:pointer;transition:opacity .15s;font-family:inherit}
-        .re-notif-btn.primary{background:hsl(var(--foreground));color:hsl(var(--background))}
-        .re-notif-btn.secondary{background:hsl(var(--accent));color:hsl(var(--foreground))}
-        .re-notif-btn:hover{opacity:.85}
-        .re-spin{animation:re-spinning 1s linear infinite}
+        @keyframes re-notif-out{from{opacity:1;transform:none}to{opacity:0;transform:translateY(14px) scale(.96)}}
         @keyframes re-spinning{to{transform:rotate(360deg)}}
-        .re-tag{display:inline-block;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;margin-left:7px;vertical-align:middle}
-        .re-pnl{font-size:11px;font-weight:600;padding:3px 8px;border-radius:4px;margin-top:4px;display:inline-block}
+        @keyframes re-modal-in{from{opacity:0;transform:scale(.95) translateY(8px)}to{opacity:1;transform:none}}
+        @keyframes re-hl{from{background:rgba(74,222,128,.18)}to{background:transparent}}
+        .re-new-tx{animation:re-hl 2s ease-out}
+        #re-notifier{position:fixed;top:16px;right:16px;z-index:99999;display:flex;flex-direction:column-reverse;gap:8px;pointer-events:none;width:340px}
+        .re-notif{background:#111113;color:#fafafa;border:1px solid rgba(255,255,255,.1);border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,.55);display:flex;align-items:flex-start;padding:13px;gap:11px;position:relative;opacity:0;transform:translateY(14px) scale(.96);animation:re-notif-in .2s cubic-bezier(.16,1,.3,1) forwards;pointer-events:all}
+        .re-notif-out{animation:re-notif-out .16s ease-in forwards}
+        .re-notif-icon{flex-shrink:0;margin-top:1px}
+        .re-notif-body{flex:1}
+        .re-notif-title{font-weight:700;font-size:13px;margin-bottom:3px;letter-spacing:-.01em}
+        .re-notif-desc{font-size:12px;color:#a1a1aa;line-height:1.4}
+        .re-notif-close{position:absolute;top:8px;right:8px;background:none;border:none;cursor:pointer;color:#52525b;padding:3px 5px;border-radius:4px;font-size:11px}
+        .re-notif-close:hover{background:rgba(255,255,255,.06)}
+        .re-notif-actions{display:flex;gap:6px;margin-top:9px}
+        .re-notif-btn{border:none;border-radius:6px;padding:5px 12px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;transition:opacity .15s}
+        .re-notif-btn.primary{background:#fafafa;color:#09090b}
+        .re-notif-btn.secondary{background:rgba(255,255,255,.08);color:#fafafa}
+        .re-notif-btn:hover{opacity:.82}
+        .re-spin{animation:re-spinning 1s linear infinite}
+        .re-tag{display:inline-block;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;margin-left:6px;vertical-align:middle}
+        .re-pnl{font-size:11px;font-weight:700;padding:3px 8px;border-radius:4px;margin-top:3px;display:inline-block}
         .re-pnl.pos{background:rgba(34,197,94,.12);color:#22c55e}
         .re-pnl.neg{background:rgba(239,68,68,.12);color:#ef4444}
         .re-outline-btn{background:transparent;color:hsl(var(--foreground));border:1px solid hsl(var(--border));border-radius:6px;padding:4px 12px;font-size:12px;font-weight:500;cursor:pointer;margin-left:10px;font-family:inherit;vertical-align:middle;transition:background .15s}
         .re-outline-btn:hover,.re-outline-btn.active{background:hsl(var(--accent))}
-        .re-feed-row{display:grid;grid-template-columns:46px 64px 1fr auto auto;gap:6px;padding:7px 14px;border-bottom:1px solid hsl(var(--border)/0.5);font-size:12px;text-decoration:none;color:hsl(var(--foreground));transition:background .1s;align-items:center}
-        .re-feed-row:hover{background:hsl(var(--accent)/0.5)}
-        .re-feed-row.buy{border-left:2px solid #22c55e}
-        .re-feed-row.sell{border-left:2px solid #ef4444}
-        .re-fd-b{font-size:10px;font-weight:700}
-        .re-fd-b.buy{color:#22c55e}
-        .re-fd-b.sell{color:#ef4444}
-        .re-fd-s{font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-        .re-fd-u{color:hsl(var(--muted-foreground));overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}
-        .re-fd-v{font-weight:600;font-size:11px;white-space:nowrap}
-        .re-fd-t{color:hsl(var(--muted-foreground));font-size:10px;white-space:nowrap}
-        .re-wl-row{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:7px;transition:background .12s}
-        .re-wl-row:hover{background:hsl(var(--accent)/0.5)}
-        .re-wl-sym{font-weight:700;font-size:13px;color:hsl(var(--foreground));text-decoration:none;flex:1}
-        .re-wl-px{font-size:12px;color:hsl(var(--muted-foreground));font-family:ui-monospace,monospace}
-        .re-wl-del{background:none;border:none;cursor:pointer;color:hsl(var(--muted-foreground));padding:2px 5px;border-radius:4px;font-size:12px;transition:all .15s}
-        .re-wl-del:hover{background:rgba(239,68,68,.12);color:#ef4444}
-        .re-mini-list{display:flex;flex-direction:column;gap:6px}
-        .re-mini-row{display:grid;grid-template-columns:64px 1fr auto;gap:10px;align-items:center;padding:8px 10px;border:1px solid hsl(var(--border)/0.7);border-radius:10px;text-decoration:none;color:hsl(var(--foreground));background:hsl(var(--background)/0.2);transition:background .12s,border-color .12s}
-        .re-mini-row:hover{background:hsl(var(--accent)/0.5);border-color:hsl(var(--border))}
-        .re-mini-sym{font-weight:800;font-family:ui-monospace,monospace;font-size:12px}
-        .re-mini-sub{font-size:11px;color:hsl(var(--muted-foreground));overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-        .re-mini-badge{font-size:10px;font-weight:800;padding:2px 8px;border-radius:999px}
-        .re-mini-badge.buy{background:rgba(34,197,94,.14);color:#22c55e}
-        .re-mini-badge.sell{background:rgba(239,68,68,.14);color:#ef4444}
-        .re-stat-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}
-        .re-stat{border:1px solid hsl(var(--border)/0.7);border-radius:10px;padding:10px;background:hsl(var(--background)/0.2)}
-        .re-stat-k{font-size:10px;color:hsl(var(--muted-foreground));text-transform:uppercase;letter-spacing:.08em;font-weight:700}
-        .re-stat-v{font-size:12px;font-weight:800;margin-top:4px}
-        .re-empty{padding:20px;text-align:center;color:hsl(var(--muted-foreground));font-size:12px;line-height:1.6}
-        .re-badge{display:inline-flex;align-items:center;padding:1px 7px;border-radius:3px;font-size:10px;font-weight:700;text-transform:uppercase}
+        .re-reported-badge{position:relative;display:inline-flex;margin-left:8px;vertical-align:middle}
+        .re-reported-label{padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700;display:inline-flex;align-items:center;gap:4px;cursor:help;color:#f87171;background:rgba(248,113,113,.12);border:1px solid rgba(248,113,113,.3)}
+        .re-reported-tooltip{visibility:hidden;width:260px;background:hsl(var(--card));color:hsl(var(--card-foreground));text-align:left;border:1px solid hsl(var(--border));border-radius:10px;padding:10px;position:absolute;z-index:10000;bottom:100%;left:50%;margin-left:-130px;margin-bottom:6px;opacity:0;transition:opacity .2s,visibility .2s;font-size:12px;line-height:1.4;pointer-events:none}
+        .re-reported-badge:hover .re-reported-tooltip{visibility:visible;opacity:1}
+        .re-search-wrap{position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:999999;display:flex;align-items:flex-start;justify-content:center;padding-top:13vh;backdrop-filter:blur(8px)}
+        .re-search-box{width:90%;max-width:540px;background:#111113;border:1px solid rgba(255,255,255,.1);border-radius:12px;overflow:hidden;box-shadow:0 24px 64px rgba(0,0,0,.55)}
+        .re-search-top{display:flex;align-items:center;gap:10px;padding:13px 15px;border-bottom:1px solid rgba(255,255,255,.07)}
+        .re-search-icon-wrap{color:#52525b;flex-shrink:0}
+        .re-search-inp{flex:1;background:none;border:none;outline:none;font-size:15px;color:#fafafa;font-family:inherit}
+        .re-search-results{max-height:300px;overflow-y:auto}
+        .re-sr-row{display:flex;flex-direction:column;padding:10px 15px;border-bottom:1px solid rgba(255,255,255,.06);text-decoration:none;transition:background .1s}
+        .re-sr-row:hover{background:rgba(255,255,255,.04)}
+        .re-sr-main{display:flex;align-items:center;gap:8px;margin-bottom:2px}
+        .re-sr-name{font-weight:600;font-size:13px;color:#fafafa}
+        .re-sr-sub{font-size:12px;color:#71717a}
+        .re-err{color:#ef4444!important}
+        .re-badge{display:inline-flex;align-items:center;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:700;text-transform:uppercase}
         .re-badge.buy{background:rgba(34,197,94,.12);color:#22c55e}
         .re-badge.sell{background:rgba(239,68,68,.12);color:#ef4444}
-        .re-search-wrap{position:fixed;inset:0;background:rgba(0,0,0,.68);z-index:999999;display:flex;align-items:flex-start;justify-content:center;padding-top:14vh;backdrop-filter:blur(4px)}
-        .re-search-box{width:90%;max-width:560px;background:hsl(var(--card));border:1px solid hsl(var(--border));border-radius:12px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.3)}
-        .re-search-top{display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid hsl(var(--border))}
-        .re-search-icon-wrap{color:hsl(var(--muted-foreground));flex-shrink:0}
-        .re-search-inp{flex:1;background:none;border:none;outline:none;font-size:15px;color:hsl(var(--foreground));font-family:inherit}
-        .re-kbd{font-size:11px;background:hsl(var(--accent));border:1px solid hsl(var(--border));border-radius:4px;padding:2px 6px;color:hsl(var(--muted-foreground));font-family:inherit}
-        .re-search-results{max-height:320px;overflow-y:auto}
-        .re-sr-row{display:flex;flex-direction:column;padding:11px 16px;border-bottom:1px solid hsl(var(--border)/0.5);text-decoration:none;transition:background .1s}
-        .re-sr-row:hover{background:hsl(var(--accent)/0.6)}
-        .re-sr-main{display:flex;align-items:center;gap:8px;margin-bottom:2px}
-        .re-sr-name{font-weight:600;font-size:13px;color:hsl(var(--foreground))}
-        .re-sr-sub{font-size:12px;color:hsl(var(--muted-foreground))}
-        .re-err{color:#ef4444!important}
         body.re-compact .space-y-4{gap:8px!important}
         body.re-compact .p-4{padding:8px!important}
         body.re-compact .p-6{padding:12px!important}
-        .re-reported-badge{position:relative;display:inline-flex;margin-left:8px;vertical-align:middle}
-        .re-reported-label{padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700;display:inline-flex;align-items:center;gap:4px;cursor:help;color:#f87171;background:rgba(248,113,113,.15);border:1px solid rgba(248,113,113,.4)}
-        .re-reported-tooltip{visibility:hidden;width:260px;background:hsl(var(--card));color:hsl(var(--card-foreground));text-align:left;border:1px solid hsl(var(--border));border-radius:8px;padding:10px;position:absolute;z-index:10000;bottom:100%;left:50%;margin-left:-130px;margin-bottom:6px;opacity:0;transition:opacity .2s,visibility .2s;font-size:12px;line-height:1.4;pointer-events:none;box-shadow:0 4px 12px rgba(0,0,0,.15)}
-        .re-reported-badge:hover .re-reported-tooltip{visibility:visible;opacity:1}
     `);
+
+    // ── Remaining mod implementations ────────────────────────────────────────
+
+    const tradeInterceptor = {
+        _patched: false,
+        _feeEl: null,
+        apply() {
+            const s = store.settings();
+            if (!s.confirmTrades && !s.showFeeEstimate) return;
+            if (this._patched) return;
+            this._patched = true;
+
+            // Watch for buy/sell button clicks via event delegation
+            document.addEventListener('click', e => {
+                const btn = e.target.closest('button');
+                if (!btn) return;
+                const txt = (btn.textContent || '').trim().toUpperCase();
+                const isTrade = /^(BUY|SELL)\s+[A-Z0-9]+$/.test(txt) || btn.classList.toString().includes('trade') || btn.dataset.action === 'trade';
+                if (!isTrade) return;
+
+                const cs = store.settings();
+                if (cs.confirmTrades) {
+                    e.preventDefault();
+                    e.stopImmediatePropagation();
+                    const msg = `Confirm ${txt}?`;
+                    if (!window.confirm(msg)) return;
+                    // Re-fire without interception by temporarily removing listener
+                    this._patched = false;
+                    btn.click();
+                    this._patched = true;
+                }
+            }, { capture: true });
+
+            // Show fee estimate near amount input
+            if (s.showFeeEstimate) {
+                const tryInject = () => {
+                    const amtInput = document.querySelector('input[placeholder*="amount"],input[placeholder*="Amount"],input[type="number"][min="0"]');
+                    if (!amtInput || document.getElementById('re-fee-est')) return;
+                    const el = document.createElement('div');
+                    el.id = 're-fee-est';
+                    el.style.cssText = 'font-size:11px;color:#a1a1aa;margin-top:4px;padding:3px 8px;background:rgba(255,255,255,.04);border-radius:4px;display:inline-block';
+                    el.textContent = 'Fee: ~0.3%';
+                    amtInput.parentElement?.insertAdjacentElement('afterend', el);
+                    amtInput.addEventListener('input', () => {
+                        const v = parseFloat(amtInput.value) || 0;
+                        const fee = v * 0.003;
+                        el.textContent = v > 0 ? `Est. fee: ~${utils.usd(fee)} (0.3%)` : 'Fee: ~0.3%';
+                    });
+                };
+                new MutationObserver(tryInject).observe(document.body, { childList: true, subtree: true });
+                tryInject();
+            }
+        },
+    };
+
+    const portfolioHighlighter = {
+        _lastApplied: 0,
+        apply() {
+            const s = store.settings();
+            if (!s.highlightProfitLoss && !s.showPortfolioPercent) return;
+            if (Date.now() - this._lastApplied < 2000) return;
+            this._lastApplied = Date.now();
+
+            // Find portfolio rows — Rugplay renders coins in sidebar as list items
+            const rows = document.querySelectorAll('[data-sidebar="content"] li, [data-slot="sidebar-content"] li');
+            const totalVal = portfolioUpdater.lastTotal || 0;
+
+            rows.forEach(row => {
+                if (row.dataset.reHighlighted) return;
+                const monoEls = row.querySelectorAll('.font-mono, span[class*="mono"]');
+                if (!monoEls.length) return;
+
+                // Try to find a value and determine if it's profit/loss
+                monoEls.forEach(el => {
+                    const txt = el.textContent.trim();
+                    const val = parseFloat(txt.replace(/[^0-9.-]/g, ''));
+                    if (!val || isNaN(val)) return;
+
+                    if (s.highlightProfitLoss) {
+                        // Color based on sign of value — portfolio gains are positive
+                        if (txt.startsWith('+') || txt.startsWith('▲')) {
+                            el.style.color = '#22c55e';
+                        } else if (txt.startsWith('-') || txt.startsWith('▼')) {
+                            el.style.color = '#ef4444';
+                        }
+                    }
+
+                    if (s.showPortfolioPercent && totalVal > 0 && val > 0) {
+                        if (!el.nextElementSibling?.classList.contains('re-pf-pct')) {
+                            const sp = document.createElement('span');
+                            sp.className = 're-pf-pct';
+                            sp.style.cssText = 'font-size:10px;color:#52525b;margin-left:4px;font-family:ui-monospace,monospace';
+                            sp.textContent = ((val / totalVal) * 100).toFixed(1) + '%';
+                            el.insertAdjacentElement('afterend', sp);
+                        }
+                    }
+                });
+                row.dataset.reHighlighted = '1';
+            });
+        },
+    };
+
+    const spreadTracker = {
+        _asks: {}, _bids: {},
+        init() {
+            wsInterceptor.on(d => {
+                if (!['live-trade','all-trades'].includes(d.type)) return;
+                const sym = (d.data?.coinSymbol || '').toUpperCase();
+                const px = parseFloat(d.data?.price || 0);
+                const type = (d.data?.type || '').toUpperCase();
+                if (!sym || !px) return;
+                if (type === 'BUY') { this._asks[sym] = px; }
+                if (type === 'SELL') { this._bids[sym] = px; }
+
+                // Inject spread display on coin page
+                const s = store.settings();
+                if (!utils.isCoinPage() || utils.getCoinSymbol() !== sym) return;
+                if ((s.showSpread || s.showBidAsk) && !document.getElementById('re-spread')) {
+                    const bid = this._bids[sym] || 0;
+                    const ask = this._asks[sym] || 0;
+                    if (bid && ask && ask >= bid) {
+                        const spreadPct = ((ask - bid) / bid * 100).toFixed(2);
+                        const el = document.createElement('div');
+                        el.id = 're-spread';
+                        el.style.cssText = 'font-size:11px;color:#a1a1aa;padding:3px 8px;background:rgba(255,255,255,.05);border-radius:4px;display:inline-flex;gap:10px;margin-top:4px';
+                        el.innerHTML = s.showBidAsk
+                            ? `<span style="color:#22c55e">Bid: ${utils.usd(bid)}</span><span style="color:#ef4444">Ask: ${utils.usd(ask)}</span><span>Spread: ${spreadPct}%</span>`
+                            : `Spread: ${spreadPct}%`;
+                        document.querySelector('main h1')?.parentElement?.appendChild(el);
+                    }
+                } else if (document.getElementById('re-spread')) {
+                    // Update existing
+                    const bid = this._bids[sym] || 0;
+                    const ask = this._asks[sym] || 0;
+                    if (bid && ask && ask >= bid) {
+                        const spreadPct = ((ask - bid) / bid * 100).toFixed(2);
+                        const el = document.getElementById('re-spread');
+                        const s2 = store.settings();
+                        el.innerHTML = s2.showBidAsk
+                            ? `<span style="color:#22c55e">Bid: ${utils.usd(bid)}</span><span style="color:#ef4444">Ask: ${utils.usd(ask)}</span><span>Spread: ${spreadPct}%</span>`
+                            : `Spread: ${spreadPct}%`;
+                    }
+                }
+            });
+        },
+    };
+
+    const reportPoller = {
+        _lastCount: -1,
+        _lastCheck: 0,
+        async poll() {
+            if (!store.settings().alertOnNewReport) return;
+            if (Date.now() - this._lastCheck < 120000) return; // check every 2 min
+            this._lastCheck = Date.now();
+            try {
+                const r = await api.get('/v1/reports?page=1&limit=1');
+                if (r.status !== 'success') return;
+                const count = r.data?.pagination?.total_items || 0;
+                if (this._lastCount >= 0 && count > this._lastCount) {
+                    const rp = r.data?.reports?.[0];
+                    const desc = rp ? `${rp.reported_username} / *${rp.coin_symbol}` : 'New report submitted';
+                    notifier.show({ title: '🚩 New Rugpull Report', description: desc, type: 'warning', duration: 10000, actions: [{ label: 'View', onClick: () => { enhancedPanel.show(); } }] });
+                    if (store.settings().soundAlerts) alertEngine._beep(400, 0.08, 0.25);
+                }
+                this._lastCount = count;
+            } catch {}
+        },
+    };
+
+    const riskChangeMonitor = {
+        _cache: {},
+        async check(sym) {
+            if (!store.settings().alertOnRiskChange) return;
+            const sc = await riskScorer.score(sym).catch(() => null);
+            if (!sc) return;
+            const prev = this._cache[sym];
+            this._cache[sym] = sc.risk;
+            if (prev !== undefined && Math.abs(sc.risk - prev) >= 10) {
+                const dir = sc.risk > prev ? 'increased' : 'decreased';
+                notifier.show({ title: `⚠ Risk Change: ${sym}`, description: `Risk score ${dir} from ${prev} → ${sc.risk} (${sc.label})`, type: sc.risk > prev ? 'error' : 'success', duration: 10000, actions: [{ label: 'View Coin', onClick: () => { location.href = `/coin/${sym}`; } }] });
+            }
+        },
+    };
+
+    const holderDropMonitor = {
+        _holders: {},
+        _times: {},
+        async track(sym) {
+            if (!store.settings().alertOnHolderDrop) return;
+            try {
+                const r = await fetch(`/coin/${sym}/__data.json?x-sveltekit-invalidated=11`);
+                if (!r.ok) return;
+                const d = await r.json();
+                const da = d?.nodes?.[1]?.data; if (!Array.isArray(da)) return;
+                const ci = da[0]?.coin; if (ci === undefined) return;
+                const coin = da[ci];
+                const getVal = idx => (idx != null && da[idx] !== undefined ? da[idx] : null);
+                const holders = getVal(coin?.holderCount) ?? 0;
+                if (!holders) return;
+                const prev = this._holders[sym];
+                this._holders[sym] = holders;
+                if (prev && holders < prev) {
+                    const drop = ((prev - holders) / prev) * 100;
+                    if (drop >= 10 && Date.now() - (this._times[sym] || 0) > 60000) {
+                        this._times[sym] = Date.now();
+                        notifier.show({ title: `📉 Holder Drop: ${sym}`, description: `Holders dropped ${drop.toFixed(1)}% (${prev} → ${holders})`, type: 'error', duration: 10000, actions: [{ label: 'View', onClick: () => { location.href = `/coin/${sym}`; } }] });
+                        if (store.settings().soundAlerts) alertEngine._beep(250, 0.1, 0.35);
+                    }
+                }
+            } catch {}
+        },
+    };
+
+    const slippageTracker = {
+        _trades: [],
+        init() {
+            wsInterceptor.on(d => {
+                if (!store.settings().trackSlippage) return;
+                if (!['live-trade','all-trades'].includes(d.type)) return;
+                const sym = (d.data?.coinSymbol || '').toUpperCase();
+                if (!utils.isCoinPage() || utils.getCoinSymbol() !== sym) return;
+                const px = parseFloat(d.data?.price || 0);
+                const expectedPx = spreadTracker._asks[sym] || spreadTracker._bids[sym] || px;
+                if (!px || !expectedPx) return;
+                const slip = Math.abs((px - expectedPx) / expectedPx * 100);
+                this._trades.push({ sym, px, expectedPx, slip, ts: Date.now() });
+                this._trades = this._trades.slice(-50);
+                this._updateDisplay(sym);
+            });
+        },
+        _updateDisplay(sym) {
+            if (!document.getElementById('re-slippage')) {
+                const el = document.createElement('div');
+                el.id = 're-slippage';
+                el.style.cssText = 'font-size:11px;color:#a1a1aa;padding:3px 8px;background:rgba(255,255,255,.05);border-radius:4px;margin-top:4px;display:inline-block';
+                document.querySelector('main h1')?.parentElement?.appendChild(el);
+            }
+            const recent = this._trades.filter(t => t.sym === sym && Date.now() - t.ts < 60000);
+            const avgSlip = recent.length ? (recent.reduce((a,b) => a + b.slip, 0) / recent.length).toFixed(3) : '—';
+            const el = document.getElementById('re-slippage');
+            if (el) el.textContent = `Avg slippage (1m): ${avgSlip}%`;
+        },
+    };
+
+    const costBasisTracker = {
+        _cache: {},
+        async load(sym) {
+            if (!store.settings().showPortfolioCostBasis) return;
+            if (this._cache[sym] && Date.now() - this._cache[sym].ts < 300000) return this._cache[sym];
+            try {
+                const me = await utils.getLoggedInUsername(); if (!me) return;
+                const d = await rugplayApi.userTrades(me, 1, 50);
+                const trades = d.trades || d.data || [];
+                const coinTrades = trades.filter(t => (t.coinSymbol || t.symbol || '').toUpperCase() === sym.toUpperCase());
+                if (!coinTrades.length) return;
+                let totalCost = 0, totalQty = 0;
+                coinTrades.forEach(t => {
+                    const qty = parseFloat(t.quantity || 0);
+                    const val = parseFloat(t.totalValue || t.value || 0);
+                    if ((t.type || '').toUpperCase() === 'BUY') { totalCost += val; totalQty += qty; }
+                });
+                if (!totalQty) return;
+                const costBasis = totalCost / totalQty;
+                this._cache[sym] = { costBasis, totalCost, totalQty, ts: Date.now() };
+
+                // Inject on coin page
+                if (utils.isCoinPage() && utils.getCoinSymbol() === sym && !document.getElementById('re-cost-basis')) {
+                    const el = document.createElement('div');
+                    el.id = 're-cost-basis';
+                    el.style.cssText = 'font-size:11px;color:#a1a1aa;padding:3px 8px;background:rgba(255,255,255,.05);border-radius:4px;margin-top:4px;display:inline-block';
+                    el.textContent = `Your avg cost: ${utils.usd(costBasis)} (${utils.num(totalQty)} held)`;
+                    document.querySelector('main h1')?.parentElement?.appendChild(el);
+                }
+                return this._cache[sym];
+            } catch {}
+        },
+    };
 
     const app = {
         w: new URLWatcher(),
@@ -1468,44 +2881,76 @@
             volumeDetector.init();
             botDetector.init();
             liveFeed.init();
+            watchlist.init();
             enhancedPanel.init();
+            spreadTracker.init();
+            slippageTracker.init();
             if (document.readyState === 'loading') await new Promise(r => document.addEventListener('DOMContentLoaded', r));
             settingsEngine.applyAll();
+            tradeInterceptor.apply();
             document.addEventListener('keydown', e => {
-                if ((e.ctrlKey || e.metaKey) && !e.shiftKey && String(e.key).toLowerCase() === 'k') {
-                    e.preventDefault();
-                    quickSearch.toggle();
-                }
-                if ((e.ctrlKey || e.metaKey) && e.shiftKey && String(e.key).toLowerCase() === 'e') {
-                    e.preventDefault();
-                    if (!enhancedPanel.isVisible) enhancedPanel.show();
-                    else enhancedPanel.hide();
+                const s = store.settings();
+                if (s.keyboardShortcuts) {
+                    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && String(e.key).toLowerCase() === 'k') {
+                        e.preventDefault();
+                        if (s.quickSearch) quickSearch.toggle();
+                    }
+                    if ((e.ctrlKey || e.metaKey) && e.shiftKey && String(e.key).toLowerCase() === 'e') {
+                        e.preventDefault();
+                        if (!enhancedPanel.isVisible) enhancedPanel.show();
+                        else enhancedPanel.hide();
+                    }
                 }
             }, { capture: true });
             if (store.settings().autoOpenPanel) {
-                setTimeout(() => {
-                    try { enhancedPanel.show(); } catch {}
-                }, 700);
+                setTimeout(() => { try { enhancedPanel.show(); } catch {} }, 700);
             }
             analytics.run().catch(() => {});
             setTimeout(() => updateChecker.check().catch(() => {}), 4000);
             setInterval(() => updateChecker.check().catch(() => {}), CONFIG.intervals.updateCheck);
+
+            // Report poller — every 2 minutes
+            setInterval(() => reportPoller.poll().catch(() => {}), 120000);
+            reportPoller.poll().catch(() => {});
+
             const run = utils.debounce(async () => {
                 sidebarEnhancer.create();
                 notifications.apply();
                 adBlocker.apply();
                 portfolioMover.apply();
+                tradeInterceptor.apply();
+                portfolioHighlighter.apply();
                 enhancedPanel.handleHashChange();
                 await userTagger.applyTags().catch(() => {});
                 if (!enhancedPanel.isVisible) {
                     tableEnhancer.enhance();
                     await profileEnhancer.init().catch(() => {});
                     await coinPageEnhancer.init().catch(() => {});
+                    // Per-coin monitors for holder drop, risk change, cost basis
+                    const sym = utils.getCoinSymbol();
+                    if (sym) {
+                        holderDropMonitor.track(sym).catch(() => {});
+                        riskChangeMonitor.check(sym).catch(() => {});
+                        costBasisTracker.load(sym).catch(() => {});
+                    }
                 }
             }, CONFIG.intervals.init);
             new MutationObserver(run).observe(document.body, { childList: true, subtree: true });
-            this.w.on(run).start();
+            this.w.on(() => {
+                sidebarEnhancer._enhancedOk = false;
+                sidebarEnhancer._searchOk = false;
+                coinPageEnhancer._priceDropRef = null;
+                run();
+            }).start();
             run();
+
+            // Dedicated sidebar poller
+            let _sidebarAttempts = 0;
+            const _sidebarPoll = setInterval(() => {
+                _sidebarAttempts++;
+                const ok = sidebarEnhancer.create();
+                if (ok || _sidebarAttempts > 60) clearInterval(_sidebarPoll);
+            }, 500);
         },
     };
 
