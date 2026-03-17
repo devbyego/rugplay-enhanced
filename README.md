@@ -1,56 +1,107 @@
-# Rugplay Enhanced
+<div align="center">
 
-**Rugplay Enhanced** is a premium, QoL-first userscript for `rugplay.com` — designed to feel like a clean pro dashboard (not a janky overlay).
+# Rugplay Enhanced 🚀
 
-## Highlights
+**Premium QoL userscript for [rugplay.com](https://rugplay.com)**  
+Turns the site into a clean, pro-level trading dashboard — no clutter, no tracking, only Rugplay's own API.
 
-- **Enhanced panel** (`Ctrl+Shift+E` or sidebar **Enhanced**) with tabs:
-  - **Dashboard**: live trade feed, filters, market radar (hot coins / whale radar / stats)
-  - **Alerts**: price alerts (above/below) with toasts (optional desktop notifications)
-  - **Reporter**: rugpull reporter + community reports
-  - **Settings**: adblock, sticky portfolio, force dark mode, compact mode, etc.
-  - **Status**: built-in diagnostics for WebSocket + API health
-- **Coin page tools** (next to Buy/Sell panel):
-  - **Recent Transactions** (vaaq API with fallback)
-  - **Risk Assessment**
-  - **My Notes** (local-only)
-- **Quick Search** (`Ctrl+K`)
-  - Uses Rugplay search when available
-  - Falls back to live-feed search + direct jump when Rugplay search is down
-- **No “watching/watchlist” clutter**
+[![Latest Release](https://img.shields.io/github/v/release/devbyego/RugplayEnhanced?color=green&label=latest&style=flat-square)](https://github.com/devbyego/RugplayEnhanced/releases/latest)
+[![License](https://img.shields.io/github/license/devbyego/RugplayEnhanced?style=flat-square)](LICENSE)
+[![Stars](https://img.shields.io/github/stars/devbyego/RugplayEnhanced?style=flat-square&color=yellow)](https://github.com/devbyego/RugplayEnhanced/stargazers)
+[![Open Issues](https://img.shields.io/github/issues/devbyego/RugplayEnhanced?style=flat-square&color=red)](https://github.com/devbyego/RugplayEnhanced/issues)
 
-## Install
+</div>
 
-1. Install a userscript manager:
-   - Tampermonkey (Chrome/Edge)
-   - Violentmonkey (Firefox/Chrome)
-2. Install `rugplay-enhanced.user.js` in your manager.
-3. Open `https://rugplay.com/` and refresh.
+## ✨ Core Features
 
-## Usage
+- **Enhanced Dashboard** (open with `Ctrl+Shift+E` or sidebar button)
+  - Live trade feed with filters (coin/user/value/side)
+  - Market radar: hot coins, whale alerts, session stats
+  - Price alerts with desktop notifications
+  - Rugpull reporter + community-voted reports
+  - Built-in diagnostics (WebSocket + API health)
+- **Coin Page Power-Ups**
+  - Recent transactions history (via vaaq.dev fallback)
+  - Risk scoring (LOW/MEDIUM/HIGH) with factors
+  - Private local coin notes
+- **Quick Search** (`Ctrl+K`) — fast coin/user lookup
+- **Quality-of-Life Toggles**
+  - Ad blocker
+  - Force dark mode
+  - Compact UI
+  - Sticky portfolio in sidebar
+  - Appear offline
+  - Volume spike & bot pattern warnings
+- **Zero external tracking** — everything stays client-side or uses Rugplay's own data
 
-- **Open panel**: `Ctrl+Shift+E` (or sidebar **Enhanced**, or `https://rugplay.com/#rugplay-enhanced`)
-- **Quick Search**: `Ctrl+K`
-- **Force Dark Mode**: Panel → **Settings** tab → toggle **Force Dark Mode**
+## 📥 Installation (30 seconds)
 
-## Reporter / Community Reports
+1. Install a userscript manager  
+   • [Tampermonkey](https://www.tampermonkey.net/) (Chrome / Edge / Firefox)  
+   • [Violentmonkey](https://violentmonkey.github.io/) (recommended for Firefox)
 
-Community reports are loaded from the Rugplay Enhanced API.
+2. Click this one-click install link:  
+   [![Install from GitHub](https://img.shields.io/badge/Install-v1.0.0-brightgreen?style=for-the-badge&logo=github)](https://github.com/devbyego/RugplayEnhanced/releases/latest/download/rugplay-enhanced.user.js)
 
-If the API is down, submits will **save locally** on your device so you can still use the feature tonight. The Reporter tab will show local-only reports until the API returns.
+3. Open https://rugplay.com → the script activates automatically
 
-## Troubleshooting
+Auto-updates are built-in via the `@updateURL` in the script.
 
-Open the panel and go to **Status**:
+## ⌨️ Keyboard Shortcuts
 
-- **WebSocket = 0 msgs**: Rugplay may have changed WebSocket hostnames or you’re not seeing live trades yet.
-- **Enhanced API errors**: Reporter/community features may be degraded until the API is back.
+| Action              | Shortcut          | Alternative                     |
+|---------------------|-------------------|---------------------------------|
+| Open Enhanced Panel | `Ctrl + Shift + E`| Sidebar → "Enhanced" or `#rugplay-enhanced` URL |
+| Quick Search        | `Ctrl + K`        | —                               |
 
-## Dev / Releases
+## ⚠️ Reporter & API Notes
 
-The userscript header includes:
+Community reports come from a lightweight backend API.  
+If it's temporarily down:
+- Reports save **locally** on your device
+- You can still submit and view your own reports
+- The **Status** tab shows real-time health checks
 
-- `@downloadURL` / `@updateURL` pointing at GitHub Releases.
+## 🛠️ Troubleshooting
 
-Publish a Release and attach `rugplay-enhanced.user.js` so auto-update works.
+Open the **Enhanced** panel → **Status** tab:
 
+- **WebSocket: 0 messages** → Rugplay might have changed endpoints, or no live trades yet
+- **Enhanced API errors** → Reporter/community features limited until restored
+
+## 🖼️ Screenshots
+
+(Add your screenshots here – upload to repo or use imgur/raw links)
+
+<details>
+<summary>Enhanced Dashboard (click to expand)</summary>
+
+![Dashboard screenshot](https://via.placeholder.com/800x500?text=Enhanced+Dashboard+Preview)  
+Live feed, filters, hot coins, whale radar, stats
+
+</details>
+
+<details>
+<summary>Coin Page Enhancements</summary>
+
+![Coin page screenshot](https://via.placeholder.com/800x500?text=Coin+Page+with+Risk+Score+and+Notes)  
+Risk card, recent txs, personal notes
+
+</details>
+
+## 🤝 Contributing
+
+1. Fork the repo
+2. Create a feature branch (`git checkout -b feature/amazing-thing`)
+3. Commit your changes (`git commit -m 'Add amazing thing'`)
+4. Push to the branch (`git push origin feature/amazing-thing`)
+5. Open a Pull Request
+
+Bug reports, feature ideas, and UI tweaks are very welcome!
+
+## 📜 License
+
+MIT License — see [LICENSE](LICENSE) file.
+
+Made with ❤️ by [devbyego](https://github.com/devbyego)  
+Feedback? → [Open an issue](https://github.com/devbyego/RugplayEnhanced/issues/new)
