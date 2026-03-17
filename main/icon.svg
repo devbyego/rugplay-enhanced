@@ -1,0 +1,7 @@
+<svg width="680" height="680" viewBox="0 0 680 680" xmlns="http://www.w3.org/2000/svg">
+<rect width="680" height="680" fill="#08080a"/>
+<polygon points="360,140 294,330 344,330 280,540 420,310 364,310 412,140" fill="#ffffff"/>
+<rect x="240" y="570" width="200" height="1" fill="rgba(255,255,255,0.12)" rx="1"/>
+<text x="340" y="618" font-family="Inter,system-ui,-apple-system,sans-serif" font-weight="900" font-size="38" fill="#ffffff" text-anchor="middle" letter-spacing="-2">RUGPLAY</text>
+<text x="340" y="648" font-family="Inter,system-ui,-apple-system,sans-serif" font-weight="400" font-size="11" fill="rgba(255,255,255,0.3)" text-anchor="middle" letter-spacing="5">ENHANCED</text>
+</svg>
