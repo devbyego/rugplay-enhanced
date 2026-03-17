@@ -41,7 +41,7 @@ Turns the site into a clean, pro-level trading dashboard — no clutter, no trac
    • [Violentmonkey](https://violentmonkey.github.io/) (recommended for Firefox)
 
 2. Click this one-click install link:  
-   [![Install from GitHub](https://img.shields.io/badge/Install-v1.1.0-brightgreen?style=for-the-badge&logo=github)](https://github.com/devbyego/RugplayEnhanced/releases/tag/1.1.0)
+   [![Install from GitHub](https://img.shields.io/badge/Install-latest-brightgreen?style=for-the-badge&logo=github)](https://github.com/devbyego/RugplayEnhanced/releases/latest)
 
 3. Open https://rugplay.com → the script activates automatically
 
