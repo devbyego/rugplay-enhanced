@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://raw.githubusercontent.com/devbyego/rugplay-enhanced/main/icon.png" width="72" />
+<img src="https://raw.githubusercontent.com/devbyego/rugplay-enhanced/main/icon.svg" width="72" />
 
 # Rugplay Enhanced
 
