@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://raw.githubusercontent.com/devbyego/rugplay-enhanced/refs/heads/main/icon.svg" width="200" />
+<img src="https://raw.githubusercontent.com/devbyego/rugplay-enhanced/refs/heads/main/main/icon.svg" width="200" />
 
 # Rugplay Enhanced
 **The #1 Tampermonkey userscript for [Rugplay](https://rugplay.com)**
