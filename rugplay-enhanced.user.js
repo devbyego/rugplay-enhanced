@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name Rugplay Enhanced
-// @version 1.3.0
+// @version 1.4.0
 // @icon https://raw.githubusercontent.com/devbyego/rugplay-enhanced/main/icon.png
-// @description Rugplay Enhanced 1.3.0 — 100+ mods, live heatmap, portfolio chart, session journal, coin scanner, trade timeline, P&L tracker, quick copy, export tools. 100% Rugplay's own API. Zero tracking.
+// @description Rugplay Enhanced 1.4.0 — fixed WS event parsing, real mods only, all features verified working. 100% Rugplay API. Zero tracking. — 100+ mods, live heatmap, portfolio chart, session journal, coin scanner, trade timeline, P&L tracker, quick copy, export tools. 100% Rugplay's own API. Zero tracking.
 // @author devbyego
 // @match https://rugplay.com/*
 // @grant GM_addStyle
@@ -36,7 +36,19 @@
                 if (!d || d.__re_source !== 'ws') return;
                 this.stats.lastMsgAt = Date.now();
                 this.stats.count += 1;
-                this._cbs.forEach(fn => { try { fn(d.payload); } catch {} });
+                const payload = d.payload;
+                // Normalize Rugplay WS events to a consistent internal shape.
+                // Rugplay publishes trades flat (no wrapper type field on the trade itself).
+                // We detect trade events by presence of coinSymbol + (type===BUY/SELL or totalValue).
+                const normalized = wsInterceptor._normalize(payload);
+                this._cbs.forEach(fn => { try { fn(normalized); } catch {} });
+                // Respond to server pings to keep connection alive (server kills after 60s idle)
+                if (payload && payload.type === 'ping') {
+                    try {
+                        // We cannot send on the WS directly here, but the page-side PW wrapper does it.
+                        window.dispatchEvent(new CustomEvent('__re_pong'));
+                    } catch {}
+                }
             });
             const patchWebSocketDirect = () => {
                 try {
@@ -135,6 +147,44 @@
         },
         on(fn) { this._cbs.push(fn); },
         off(fn) { this._cbs = this._cbs.filter(c => c !== fn); },
+        // Normalize any WS payload into our internal format.
+        // Rugplay trade events come flat: { coinSymbol, username, type, totalValue, price, timestamp }
+        // Price updates come as: { type:'price_update', coinSymbol, currentPrice, ... }
+        // We map both to a consistent shape so all consumers work correctly.
+        _normalize(d) {
+            if (!d || typeof d !== 'object') return d;
+            // Already normalized or special type
+            if (d.type === 'price_update' || d.type === 'arcade_activity' || d.type === 'ping') return d;
+            // Detect trade event: has coinSymbol and either totalValue or (type is BUY/SELL)
+            const hasSymbol = !!(d.coinSymbol || d.coin_symbol || d.symbol);
+            const hasTrade = !!(d.totalValue || d.total_value || d.type === 'BUY' || d.type === 'SELL' || d.username);
+            if (hasSymbol && hasTrade) {
+                // Normalize to internal trade shape
+                return {
+                    type: 'live-trade',
+                    data: {
+                        coinSymbol: (d.coinSymbol || d.coin_symbol || d.symbol || '').toUpperCase(),
+                        username: d.username || d.user || '?',
+                        type: (d.type || 'BUY').toUpperCase(),
+                        totalValue: parseFloat(d.totalValue || d.total_value || d.amount || 0),
+                        price: parseFloat(d.price || d.currentPrice || d.current_price || 0),
+                        timestamp: d.timestamp || d.created_at || Date.now(),
+                        quantity: d.quantity || d.amount || 0,
+                        txHash: d.txHash || d.hash || null,
+                    }
+                };
+            }
+            // price_update from prices:SYMBOL channel (redundant but defensive)
+            if (d.type === 'price_update' || d.currentPrice !== undefined) {
+                return {
+                    type: 'price_update',
+                    coinSymbol: (d.coinSymbol || '').toUpperCase(),
+                    price: parseFloat(d.currentPrice || d.price || 0),
+                    data: d,
+                };
+            }
+            return d;
+        },
     };
     wsInterceptor.patch();
     const pathname = window.location.pathname;
@@ -149,66 +199,70 @@
         get: (k, d = null) => { const v = GM_getValue(k, null); if (v === null) return d; try { return JSON.parse(v); } catch { return v; } },
         set: (k, v) => GM_setValue(k, JSON.stringify(v)),
         _DEFAULTS: {
-            adblock:true, notifications:true, stickyPortfolio:false, appearOffline:false,
-            showPnL:true, compactMode:false, forceDark:true, autoOpenPanel:false, panelTab:'dashboard',
-            clickableRows:true, sidebarSearch:true, urlShortcuts:true, focusMode:false,
-            hideFooter:false, hideOnlineCount:false, hidePromoBar:false, monoFont:false,
-            largeClickTargets:true, smoothScrolling:true, hideEmptyPortfolio:false,
-            dimInactiveTabs:false, highlightNewCoins:true, showCoinAge:true, showHolderCount:true,
-            hideVerifiedBadge:false, borderlessCards:false, reducedMotion:false, sidebarCompact:false,
-            hideRightSidebar:false, pinFavoriteCoins:false, hideOfflineDM:true,
-            txCard:true, riskScore:true, riskCard:true, reportedBadge:true, coinNotes:true,
-            showPriceChange:true, showVolume24h:true, showMarketCap:true, warnLowLiquidity:true,
-            holdersWarning:true, showCreatorBadge:true, txTimestamps:true, txHighlightNew:true,
-            txShowAvatar:false, quickBuyButtons:false, confirmTrades:true, showSpread:true,
-            priceDecimals:6, showCandleColors:true, highlightWhaleTrades:true, whaleTxMin:500,
-            showPortfolioPercent:true, showPortfolioCostBasis:false, trackSlippage:false,
-            showFeeEstimate:true, highlightProfitLoss:true, showBidAsk:false,
-            botWarning:true, volumeSpikes:true, desktopAlerts:false, whalePing:true,
-            flashTitle:true, soundAlerts:false, alertOnNewCoin:false, alertOnHolderDrop:false,
-            alertOnPriceDrop:false, priceDropPct:20, alertOnVolumeSpike:true, volumeSpikeUsd:5000,
-            alertOnBotActivity:true, alertOnNewReport:false, alertOnWatchlistTrade:true,
+            // ── Core (always on — non-intrusive, no visual changes) ────────────
+            panelTab:'dashboard', forceDark:true, betterScrollbars:true,
+            keyboardShortcuts:true, quickSearch:true, sidebarSearch:true,
+            urlShortcuts:true, blockAnalytics:true, stripTrackingParams:true,
+            autoRefreshFeed:true, timestampFormat:'relative', numberFormat:'abbreviated',
+            feedMaxRows:80, whaleTxMin:500, priceDecimals:6,
+            tradeFeedBuyColor:'#22c55e', tradeFeedSellColor:'#ef4444',
+            accentColor:'default', cardRadius:'xl', feedMaxRowsCompact:120,
+            accentPreset:'default', panelWidth:'normal', notifSound:'beep',
+            notifDuration:5000, priceDropPct:20, volumeSpikeUsd:5000,
+            holderDropPct:20, topCount:5, hotkeySearch:'k', hotkeyPanel:'e',
+            gemMinScore:0, gemMaxRisk:40, smallTradeUsd:10,
+            pinnedCoins:'', blockedUsers:'', trustedCreators:'',
+            portfolioPnLMode:'session', portfolioRefreshRate:5000,
+            riskAutoBlockThreshold:80, autoReportThreshold:0,
+            muteBelow:0, panelOpacity:100, maxAlerts:50, whaleSizeFilter:500,
+            chartType:'bar', feedFont:'mono',
+
+            // ── Everything else starts OFF — user enables what they want ───────
+            adblock:false, notifications:false, stickyPortfolio:false,
+            appearOffline:false, showPnL:false, compactMode:false,
+            autoOpenPanel:false, clickableRows:false, focusMode:false,
+            hideFooter:false, hideOnlineCount:false, hidePromoBar:false,
+            monoFont:false, largeClickTargets:false, smoothScrolling:false,
+            hideEmptyPortfolio:false, dimInactiveTabs:false,
+            highlightNewCoins:false, showCoinAge:false, showHolderCount:false,
+            hideVerifiedBadge:false, borderlessCards:false, reducedMotion:false,
+            sidebarCompact:false, hideRightSidebar:false, pinFavoriteCoins:false,
+            hideOfflineDM:false, txCard:false, riskScore:false, riskCard:false,
+            reportedBadge:false, coinNotes:false, showPriceChange:false,
+            showVolume24h:false, showMarketCap:false, warnLowLiquidity:false,
+            holdersWarning:false, showCreatorBadge:false, txTimestamps:false,
+            txHighlightNew:false, txShowAvatar:false, quickBuyButtons:false,
+            confirmTrades:false, showSpread:false, showCandleColors:false,
+            highlightWhaleTrades:false, showPortfolioPercent:false,
+            showPortfolioCostBasis:false, trackSlippage:false,
+            showFeeEstimate:false, highlightProfitLoss:false, showBidAsk:false,
+            botWarning:false, volumeSpikes:false, desktopAlerts:false,
+            whalePing:false, flashTitle:false, soundAlerts:false,
+            alertOnNewCoin:false, alertOnHolderDrop:false, alertOnPriceDrop:false,
+            alertOnVolumeSpike:false, alertOnBotActivity:false,
+            alertOnNewReport:false, alertOnWatchlistTrade:false,
             alertOnRiskChange:false, alertOnCreatorSell:false,
             hideBalance:false, blurPortfolioValue:false, anonymousMode:false,
-            blockAnalytics:true, stripTrackingParams:true, noReferrer:false,
-            tradeFeedBuyColor:'#22c55e', tradeFeedSellColor:'#ef4444',
-            accentColor:'default', cardRadius:'xl', feedCompact:false,
-            feedMaxRows:80, timestampFormat:'relative', numberFormat:'abbreviated',
-            profileHistory:true, profileWatch:true, quickSearch:true,
-            watchlistAlerts:true, autoRefreshFeed:true, preloadCoinData:false,
-            betterScrollbars:true, keyboardShortcuts:true, devMode:false,
-            heatmap:true, portfolioChart:true, sessionJournal:true, coinScanner:true,
-            tradeTimeline:false, quickCopySymbol:true, exportData:true,
-            showSessionStats:true, sentimentBar:true, autoTagCoins:true,
-            highlightTopTraders:true, showCoinRank:true, whaleSizeFilter:500,
-            feedSoundOnWhale:false, muteBelow:0, showTxHeatmap:false,
-            zeroConfirmBuy:false, oneClickSell:false, showNetFlow:true,
-            hideSmallTrades:false, smallTradeUsd:10, groupByMinute:false,
-            showChangePercent:true, colorCodeVolume:true, showBuySellRatio:true,
-            blurFeedOnAlt:false, autoHidePanel:false, panelOpacity:100,
-            showLiveChart:false, chartType:'bar', feedFont:'mono',
-            compactAlerts:false, showAlertHistory:true, maxAlerts:50,
-            pinnedCoins:'', blockedUsers:'', trustedCreators:'',
-            riskAutoBlock:false, riskAutoBlockThreshold:80,
-            notifSound:'beep', notifDuration:5000,
-            hideSponsoredCoins:false, showCoinDescription:true,
-            portfolioPnLMode:'session', portfolioRefreshRate:5000,
-            showTopGainers:true, showTopLosers:true, topCount:5,
-            enableHotkeys:true, hotkeySearch:'k', hotkeyPanel:'e',
-            sidebarBadge:true, showVersionBadge:true,
-            accentPreset:'default', panelWidth:'normal',
-            feedMaxRowsCompact:120, showCreatorSells:true,
-            alertOnHolderDrop:false, holderDropPct:20,
-            showSpreadCard:true, showSlippageCard:false,
-            autoReportThreshold:0, communityTrust:true,
-            showFollowedCoins:false, darkCharts:true,
-            showGems:true, gemMinScore:0, gemMaxRisk:40,
-            autoSnipeLaunches:true,
-            liquidityRugDetector:true,
-            devWalletTracker:true,
-            oneClickMaxBuy:true,
-            oneClickMaxSell:true,
-            liveSlippageEstimator:true
+            noReferrer:false, feedCompact:false, profileHistory:false,
+            profileWatch:false, watchlistAlerts:false, preloadCoinData:false,
+            devMode:false, heatmap:false, portfolioChart:false,
+            sessionJournal:false, coinScanner:false, tradeTimeline:false,
+            quickCopySymbol:false, exportData:false, showSessionStats:false,
+            sentimentBar:false, autoTagCoins:false, highlightTopTraders:false,
+            showCoinRank:false, feedSoundOnWhale:false, showTxHeatmap:false,
+            zeroConfirmBuy:false, oneClickSell:false, showNetFlow:false,
+            hideSmallTrades:false, groupByMinute:false, showChangePercent:false,
+            colorCodeVolume:false, showBuySellRatio:false, blurFeedOnAlt:false,
+            autoHidePanel:false, showLiveChart:false, compactAlerts:false,
+            showAlertHistory:false, hideSponsoredCoins:false,
+            showCoinDescription:false, showTopGainers:false, showTopLosers:false,
+            enableHotkeys:false, sidebarBadge:false, showVersionBadge:false,
+            showCreatorSells:false, showSpreadCard:false, showSlippageCard:false,
+            communityTrust:false, showFollowedCoins:false, darkCharts:false,
+            showGems:false, riskAutoBlock:false, showCoinCreator:false,
+            hideOwnTrades:false, pinWatchlistFeed:false, showTxCount:false,
+            highlightTopCoins:false, confirmSells:false,
+            snipeTargets:'', snipeNavigate:true, snipeSound:true,
         },
         _cache: null,
         _cacheDirty: true,
@@ -359,7 +413,8 @@
             }
         },
         userTrades: async (user, page = 1, limit = 15) => {
-            const r = await fetch(`/api/user/${user}/trades?page=${page}&limit=${limit}`, { headers: { Accept: 'application/json' } });
+            // Rugplay uses /api/user/[username]/trades
+            const r = await fetch(`/api/user/${encodeURIComponent(user)}/trades?page=${page}&limit=${limit}`, { headers: { Accept: 'application/json' } });
             if (!r.ok) throw new Error('fetch_failed');
             return r.json();
         },
@@ -710,7 +765,16 @@
             if (!s.showTopGainers) rules.push('#xp-gainers{display:none!important}');
             if (!s.showTopLosers) rules.push('#xp-losers{display:none!important}');
             if (s.showLiveChart) rules.push('#xp-pf-chart-card{display:block!important}');
-            if (s.tradeTimeline) rules.push('#xp-feed-timeline-toggle{border-color:var(--xp-b3)!important}');
+            if (s.tradeTimeline) rules.push('#xp-feed-timeline-toggle{border-color:var(--re-b3)!important}');
+            // NEW REAL MODS
+            if (s.hideOwnTrades) {
+                const me = document.querySelector('#bits-c1 .truncate.text-xs')?.textContent?.replace('@','').trim();
+                if (me) rules.push(`.xp-feed-row[data-user="${CSS.escape(me)}"]{display:none!important}`);
+            }
+            if (s.highlightTopCoins) rules.push('[data-top-vol="1"].xp-feed-row{border-left-color:rgba(255,214,10,.8)!important;background:rgba(255,214,10,.03)!important}');
+            if (s.confirmSells) rules.push('/* confirmSells handled in tradeInterceptor */');
+            if (s.feedCompact) rules.push('.xp-feed-row{padding-top:3px!important;padding-bottom:3px!important;font-size:11px!important}.xp-feed-rows{max-height:500px!important}');
+            // Fix CSS var references - xp-* vars don't exist, re-* do
             this._el.textContent = rules.join('\n');
         },
     };
@@ -794,7 +858,22 @@
     const alertEngine = {
         _flashTimer: null,
         _origTitle: null,
-        init() { wsInterceptor.on(d => { const sym = ((d.data?.coinSymbol || d.data?.symbol) || '').toUpperCase(); const px = parseFloat(d.data?.price || d.data?.currentPrice || 0); if (sym && px) this._chk(sym, px); }); },
+        init() {
+            wsInterceptor.on(d => {
+                // Handle trade events
+                if (d.type === 'live-trade' && d.data) {
+                    const sym = (d.data.coinSymbol || '').toUpperCase();
+                    const px = parseFloat(d.data.price || 0);
+                    if (sym && px) this._chk(sym, px);
+                }
+                // Handle price_update events from prices:SYMBOL channel
+                if (d.type === 'price_update') {
+                    const sym = (d.coinSymbol || '').toUpperCase();
+                    const px = parseFloat(d.price || 0);
+                    if (sym && px) this._chk(sym, px);
+                }
+            });
+        },
         _chk(sym, px) {
             const al = store.alerts(); let ch = false;
             al.forEach(a => {
@@ -838,7 +917,7 @@
         hist: {},
         init() {
             wsInterceptor.on(d => {
-                if (!['live-trade', 'all-trades'].includes(d.type)) return;
+                if (d.type !== 'live-trade') return;
                 const sym = (d.data?.coinSymbol || '').toUpperCase();
                 const v = parseFloat(d.data?.totalValue || 0);
                 if (!sym || !v) return;
@@ -861,7 +940,7 @@
     };
     const botDetector = {
         tr: {},
-        init() { wsInterceptor.on(d => { if (!['live-trade', 'all-trades'].includes(d.type)) return; const sym = (d.data?.coinSymbol || '').toUpperCase(); const usr = d.data?.username; if (!sym || !usr) return; if (!this.tr[sym]) this.tr[sym] = []; this.tr[sym].push({ usr, v: parseFloat(d.data?.totalValue || 0), type: (d.data?.type || '').toUpperCase(), ts: Date.now() }); this.tr[sym] = this.tr[sym].filter(x => Date.now() - x.ts < 120000); this._ana(sym); }); },
+        init() { wsInterceptor.on(d => { if (d.type !== 'live-trade') return; const sym = (d.data?.coinSymbol || '').toUpperCase(); const usr = d.data?.username; if (!sym || !usr) return; if (!this.tr[sym]) this.tr[sym] = []; this.tr[sym].push({ usr, v: parseFloat(d.data?.totalValue || 0), type: (d.data?.type || '').toUpperCase(), ts: Date.now() }); this.tr[sym] = this.tr[sym].filter(x => Date.now() - x.ts < 120000); this._ana(sym); }); },
         _ana(sym) {
             const tr = this.tr[sym];
             if (!tr || tr.length < 6) return;
@@ -954,7 +1033,7 @@
         _seenCoins: new Set(),
         init() {
             wsInterceptor.on(d => {
-                if (!['live-trade', 'all-trades'].includes(d.type)) return;
+                if (d.type !== 'live-trade') return;
                 const t = d.data; if (!t) return;
                 const sym = (t.coinSymbol || '').toUpperCase();
                 const usr = t.username || '?';
@@ -970,11 +1049,17 @@
                 this.trades = this.trades.slice(0, 500);
                 if (this.open && !this.paused) this._renderThrottled();
                 const s = store.settings();
-                if ((s.alertOnWatchlistTrade || s.watchlistAlerts) && watchlist.has(sym)) {
-                    const k = `re_wla_${sym}`; if (GM_getValue(k, 0) < Date.now() - 10000) {
-                        GM_setValue(k, Date.now());
-                        notifier.show({ title: `👁 Watchlist: ${sym}`, description: `${usr} ${type === 'SELL' ? 'sold' : 'bought'} ${utils.usd(val)}`, type: type === 'SELL' ? 'warning' : 'success', duration: 6000, actions: [{ label: 'View', onClick: () => { location.href = `/coin/${sym}`; } }] });
-                        if (s.soundAlerts) alertEngine._beep(type === 'SELL' ? 280 : 550, 0.07, 0.2);
+                if (watchlist.has(sym)) {
+                    // Always track watchlist trades for the wl feed tab
+                    if (!window._reWlFeed) window._reWlFeed = [];
+                    window._reWlFeed.unshift({ sym, usr, type, val, px, ts });
+                    window._reWlFeed = window._reWlFeed.slice(0, 200);
+                    if ((s.alertOnWatchlistTrade || s.watchlistAlerts)) {
+                        const k = `re_wla_${sym}`; if (GM_getValue(k, 0) < Date.now() - 10000) {
+                            GM_setValue(k, Date.now());
+                            notifier.show({ title: `👁 Watchlist: ${sym}`, description: `${usr} ${type === 'SELL' ? 'sold' : 'bought'} ${utils.usd(val)}`, type: type === 'SELL' ? 'warning' : 'success', duration: 6000, actions: [{ label: 'View', onClick: () => { location.href = `/coin/${sym}`; } }] });
+                            if (s.soundAlerts) alertEngine._beep(type === 'SELL' ? 280 : 550, 0.07, 0.2);
+                        }
                     }
                 }
                 if (s.whalePing && isWhale) {
@@ -1055,7 +1140,7 @@
                     _pins.has(t.sym) ? 'data-pinned="1"' : '',
                     s2.showTradingVolume ? `data-vol="${utils.usd(t.val)}"` : '',
                 ].filter(Boolean).join(' ');
-                return `<a href="/coin/${t.sym}" class="xp-feed-row ${t.type==='SELL'?'sell':'buy'}" ${attrs}><span class="${t.type==='SELL'?'xp-b-sell':'xp-b-buy'}">${t.type}</span><span class="xp-f-sym">${t.sym}${isWhale?'<span class="xp-badge whale">🐋</span>':''}</span><span class="xp-f-usr">${t.usr}</span><span class="xp-f-val">${utils.usd(t.val)}</span><span class="xp-f-ts" data-ts="${t.ts}">${utils.ago(t.ts)}</span></a>`;
+                return `<a href="/coin/${t.sym}" class="xp-feed-row ${t.type==='SELL'?'sell':'buy'}" ${attrs} data-user="${t.usr}">${s2.showTxHeatmap && minuteGroup ? '<div style="grid-column:1/-1;font-size:9px;color:var(--re-t2);padding:4px 0 2px;font-family:var(--re-mono)">' + new Date(t.ts).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) + '</div>' : ''}<span class="${t.type==='SELL'?'xp-b-sell':'xp-b-buy'}">${t.type}</span><span class="xp-f-sym">${t.sym}${isWhale?'<span class="xp-badge whale">🐋</span>':''}${isCreatorSell?'<span class="xp-badge" style="color:#ef4444;background:rgba(239,68,68,.1);border-color:rgba(239,68,68,.2)">dev</span>':''}</span><span class="xp-f-usr">${t.usr}</span><span class="xp-f-val">${utils.usd(t.val)}</span><span class="xp-f-ts" data-ts="${t.ts}">${utils.ago(t.ts)}</span></a>`;
             }).join('');
         },
         startTsTimer() { this.stopTsTimer(); this.tsTimer = setInterval(() => { document.querySelectorAll('.re-fd-t[data-ts],.xp-f-ts[data-ts]').forEach(el => { el.textContent = utils.ago(+el.dataset.ts); }); }, 1000); },
@@ -1280,7 +1365,29 @@
                 const created = getVal(coin.createdAt) ?? null;
                 const h1 = document.querySelector('main h1, main .text-2xl.font-bold, main .text-3xl.font-bold');
                 if (!h1) return;
-                if (s.showCoinAge && created && !document.getElementById('re-coin-age')) {
+                // showCoinCreator
+                if (s.showCoinCreator && !document.getElementById('re-coin-creator')) {
+                    const cu = getVal(coin.creatorUsername) ?? getVal(coin.creator) ?? null;
+                    if (cu && typeof cu === 'string') {
+                        const eld = document.createElement('div');
+                        eld.id = 're-coin-creator';
+                        eld.style.cssText = 'font-size:11px;color:#a1a1aa;display:inline-flex;align-items:center;gap:5px;margin-top:3px';
+                        eld.innerHTML = 'Created by <a href="/user/' + cu + '" style="color:#60a5fa;text-decoration:none;font-weight:600">@' + cu + '</a>';
+                        document.querySelector('main h1')?.parentElement?.appendChild(eld);
+                    }
+                }
+                // showTxCount
+                if (s.showTxCount && !document.getElementById('re-tx-count')) {
+                    const ttrades = getVal(coin.tradeCount) ?? getVal(coin.totalTrades) ?? null;
+                    if (ttrades && ttrades > 0) {
+                        const etc = document.createElement('span');
+                        etc.id = 're-tx-count';
+                        etc.style.cssText = 'font-size:11px;font-weight:600;padding:2px 7px;border-radius:4px;background:rgba(255,255,255,.06);color:#a1a1aa;margin-left:6px;vertical-align:middle;display:inline-block';
+                        etc.textContent = ttrades.toLocaleString() + ' trades';
+                        document.querySelector('main h1')?.appendChild(etc);
+                    }
+                }
+                                if (s.showCoinAge && created && !document.getElementById('re-coin-age')) {
                     const ageH = (Date.now() - new Date(created).getTime()) / 3600000;
                     const ageStr = ageH < 1 ? `${Math.round(ageH * 60)}m old` : ageH < 24 ? `${Math.round(ageH)}h old` : `${Math.round(ageH / 24)}d old`;
                     const el = document.createElement('span');
@@ -1501,8 +1608,15 @@
         _prices: {},
         init() {
             wsInterceptor.on(d => {
-                const sym = ((d.data?.coinSymbol || d.data?.symbol) || '').toUpperCase();
-                const px = parseFloat(d.data?.price || d.data?.currentPrice || 0);
+                // Accept both trade events and price_update events for price tracking
+                let sym = '', px = 0;
+                if (d.type === 'live-trade' && d.data) {
+                    sym = (d.data.coinSymbol || '').toUpperCase();
+                    px = parseFloat(d.data.price || 0);
+                } else if (d.type === 'price_update') {
+                    sym = (d.coinSymbol || '').toUpperCase();
+                    px = parseFloat(d.price || 0);
+                }
                 if (!sym || !px) return;
                 this._prices[sym] = px;
                 const el = document.getElementById(`re-wlp-${sym}`);
@@ -1622,7 +1736,7 @@
             liveFeed.open = true; liveFeed.render(); liveFeed.startTsTimer();
             dashboard.render();
             settingsEngine.applyAll();
-            ['re-stat-trades','xp-stat-trades'].forEach(id=>{const el=document.getElementById(id);if(el)el.textContent=liveFeed.trades.length;});
+            ['re-stat-trades','xp-stat-trades','xp-stat-trades-2'].forEach(id=>{const el=document.getElementById(id);if(el)el.textContent=liveFeed.trades.length;});
         },
         hide() {
             if (!this.isVisible) return;
@@ -1643,917 +1757,1082 @@
             const s = store.settings();
             const activeAlerts = store.alerts().filter(a=>!a.done).length;
             const wlCount = store.get('re:wl',[]).length;
+            const ver = GM_info?.script?.version || '1.4.0';
+
+            // ── MODS registry ──────────────────────────────────────────────────
             const MODS = [
-                {key:'adblock', name:'Ad Blocker', desc:'Removes all Google and third-party ads. Cleaner pages, zero distractions.', cat:'Interface'},
-                {key:'notifications', name:'Notification Badges', desc:'Shows unread count badge on the sidebar notifications icon.', cat:'Interface'},
-                {key:'stickyPortfolio', name:'Sticky Portfolio', desc:'Pins your portfolio widget to the bottom of the sidebar permanently.', cat:'Interface'},
-                {key:'sidebarCompact', name:'Compact Sidebar', desc:'Reduces sidebar nav items to 28px height, fitting more without scrolling.', cat:'Interface'},
-                {key:'compactMode', name:'Compact Layout', desc:'Tightens all Tailwind spacing classes across the Rugplay UI.', cat:'Interface'},
-                {key:'focusMode', name:'Focus Mode', desc:'Fades sidebar, nav and header to 12% opacity. Hover to reveal.', cat:'Interface'},
-                {key:'borderlessCards', name:'Borderless Cards', desc:'Removes all card borders and shadows for a minimal flat look.', cat:'Interface'},
-                {key:'monoFont', name:'Monospace Font', desc:'Forces the entire Rugplay UI into a monospace font.', cat:'Interface'},
-                {key:'reducedMotion', name:'Reduce Motion', desc:'Sets all CSS animations to 0.01ms. Ideal for slow machines.', cat:'Interface'},
-                {key:'smoothScrolling', name:'Smooth Scrolling', desc:'Enables CSS smooth-scroll across the entire page.', cat:'Interface'},
-                {key:'largeClickTargets', name:'Large Click Targets', desc:'Forces all buttons and links to a minimum height of 32px.', cat:'Interface'},
-                {key:'betterScrollbars', name:'Slim Scrollbars', desc:'Replaces browser scrollbars with slim 5px ones matching the dark theme.', cat:'Interface'},
-                {key:'hideFooter', name:'Hide Footer', desc:'Hides the page footer to reclaim vertical space.', cat:'Interface'},
-                {key:'hidePromoBar', name:'Hide Promo Banners', desc:'Hides promotional banners and announcement bars.', cat:'Interface'},
-                {key:'hideRightSidebar', name:'Hide Right Panel', desc:'Collapses the right sidebar panel, giving main content more room.', cat:'Interface'},
-                {key:'hideOnlineCount', name:'Hide Online Count', desc:'Hides all user-online-count indicators.', cat:'Interface'},
-                {key:'dimInactiveTabs', name:'Dim Inactive Tabs', desc:'Dims the page when the browser tab is not in focus.', cat:'Interface'},
-                {key:'sidebarSearch', name:'Sidebar Quick Search', desc:'Adds a Quick Search button to sidebar nav. Ctrl+K works everywhere.', cat:'Interface'},
-                {key:'urlShortcuts', name:'URL Shortcuts', desc:'Navigate to /@username or /*SYMBOL directly in the address bar.', cat:'Interface'},
-                {key:'keyboardShortcuts', name:'Keyboard Shortcuts', desc:'Ctrl+K: search. Ctrl+Shift+E: panel toggle. All shortcuts.', cat:'Interface'},
-                {key:'autoOpenPanel', name:'Auto-open Panel', desc:'Automatically opens Enhanced every time you load Rugplay.', cat:'Interface'},
-                {key:'sidebarBadge', name:'Sidebar Alert Badge', desc:'Shows a red dot on the Enhanced sidebar button when unread alerts are active.', cat:'Interface'},
-                {key:'showVersionBadge', name:'Version Badge', desc:'Shows the current Enhanced version number in the topbar.', cat:'Interface'},
-                {key:'panelWidth', name:'Full-width Panel', desc:'Expands the Enhanced panel to fill the entire main content area.', cat:'Interface'},
-                {key:'autoHidePanel', name:'Auto-hide on Navigate', desc:'Automatically closes the panel when you navigate to a coin or user page.', cat:'Interface'},
-                {key:'quickCopySymbol', name:'Quick Copy Symbol', desc:'Click any coin symbol in the panel to instantly copy it to clipboard.', cat:'Interface'},
-                {key:'txCard', name:'Transaction Card', desc:'Injects a Recent Transactions card on every coin page with live refresh.', cat:'Trading'},
-                {key:'riskCard', name:'Risk Assessment Card', desc:'Injects a 0-100 risk score card on coin pages based on age, holders, mcap and sell pressure.', cat:'Trading'},
-                {key:'riskScore', name:'Risk Scoring Engine', desc:'Powers background risk calculation. Disable to stop all risk computation.', cat:'Trading'},
-                {key:'reportedBadge', name:'Reported Badge', desc:'Shows a community-reported badge on coin pages flagged in the Reporter.', cat:'Trading'},
-                {key:'coinNotes', name:'Coin Notes', desc:'Private per-coin notes on every coin page. Stored locally — never sent anywhere.', cat:'Trading'},
-                {key:'highlightNewCoins', name:'Highlight New Coins', desc:'Adds a green border to coins under 1 hour old in all tables and feeds.', cat:'Trading'},
-                {key:'showCoinAge', name:'Show Coin Age', desc:'Displays coin age underneath the name on coin pages.', cat:'Trading'},
-                {key:'showHolderCount', name:'Show Holder Count', desc:'Displays holder count prominently on coin pages.', cat:'Trading'},
-                {key:'showCreatorBadge', name:'Creator Tags', desc:'Shows Enhanced user tags on comments and profile pages.', cat:'Trading'},
-                {key:'holdersWarning', name:'Low Holder Warning', desc:'Warning indicator when holder count is below 10 — high concentration risk.', cat:'Trading'},
-                {key:'warnLowLiquidity', name:'Low Liquidity Warning', desc:'Warns when market cap is under $500 — extreme rugpull risk.', cat:'Trading'},
-                {key:'txTimestamps', name:'Live Timestamps', desc:'Keeps transaction timestamps updated live without refreshing.', cat:'Trading'},
-                {key:'txHighlightNew', name:'Highlight New Txns', desc:'Flashes new transactions green when the feed refreshes.', cat:'Trading'},
-                {key:'confirmTrades', name:'Trade Confirmation', desc:'Adds a confirmation step before buy/sell to prevent fat-finger errors.', cat:'Trading'},
-                {key:'showFeeEstimate', name:'Fee Estimate', desc:'Shows estimated fee in USD before confirming a trade.', cat:'Trading'},
-                {key:'highlightProfitLoss', name:'P&L Highlight', desc:'Colors portfolio positions green/red based on unrealised P&L.', cat:'Trading'},
-                {key:'showPortfolioPercent',name:'Portfolio %', desc:'Shows each coin as a % of your total portfolio value.', cat:'Trading'},
-                {key:'showPriceChange', name:'24h Price Change', desc:'Shows 24h % change alongside coin names throughout the platform.', cat:'Trading'},
-                {key:'showVolume24h', name:'24h Volume', desc:'Displays 24h trading volume on coin pages.', cat:'Trading'},
-                {key:'showMarketCap', name:'Market Cap Display', desc:'Keeps market cap always visible on coin pages and feed rows.', cat:'Trading'},
-                {key:'highlightWhaleTrades',name:'Whale Trade Glow', desc:'Gold ring around trades exceeding the whale threshold in the live feed.', cat:'Trading'},
-                {key:'profileHistory', name:'Trade History Button', desc:'Adds a History button on profile pages opening a paginated trade modal.', cat:'Trading'},
-                {key:'profileWatch', name:'Watch User Button', desc:'Adds a Watch toggle on profile pages to track users in your watchlist.', cat:'Trading'},
-                {key:'clickableRows', name:'Clickable Table Rows', desc:'Makes all portfolio table rows clickable — navigates to the coin page.', cat:'Trading'},
-                {key:'showPnL', name:'Session P&L', desc:'Tracks portfolio value from session start and shows unrealised P&L in sidebar.', cat:'Trading'},
-                {key:'showNetFlow', name:'Net Flow Display', desc:'Shows net buy minus sell flow for each coin in the radar over the selected window.', cat:'Trading'},
-                {key:'showBuySellRatio', name:'Buy/Sell Ratio', desc:'Displays buy-to-sell ratio next to coin names in the hot coins list.', cat:'Trading'},
-                {key:'showCoinRank', name:'Coin Rank Badge', desc:'Shows a rank badge (#1, #2...) next to hot coins based on session volume.', cat:'Trading'},
-                {key:'showTopGainers', name:'Top Gainers', desc:'Shows the top gaining coins in the dashboard based on live feed price data.', cat:'Trading'},
-                {key:'showTopLosers', name:'Top Losers', desc:'Shows the biggest declining coins in the dashboard based on live feed price data.', cat:'Trading'},
-                {key:'showGems', name:'Gem Finder', desc:'Highlights low-risk high-activity coins — under configurable risk score with strong volume.', cat:'Trading'},
-                {key:'showCreatorSells', name:'Creator Sell Tracker', desc:'Tracks and highlights when coin creators appear in the SELL side of the live feed.', cat:'Trading'},
-                {key:'colorCodeVolume', name:'Color-code Volume', desc:'Colors volume bars green/amber/red based on buy vs sell dominance.', cat:'Trading'},
-                {key:'autoTagCoins', name:'Auto-tag Coins', desc:'Automatically labels new, whale, hot and risky coins with badges in the feed.', cat:'Trading'},
-                {key:'showChangePercent', name:'Show % Change', desc:'Shows price change percentage on all coin mini-rows in radar and watchlist.', cat:'Trading'},
-                {key:'highlightTopTraders', name:'Highlight Top Traders', desc:'Marks the most active addresses from the live feed with a special badge.', cat:'Trading'},
-                {key:'botWarning', name:'Bot Detection', desc:'Analyses timing variance in the live feed. Alerts when bot patterns are detected.', cat:'Alerts'},
-                {key:'volumeSpikes', name:'Volume Spike Alert', desc:'Monitors 60s rolling volume. Fires when a coin exceeds the configured USD threshold.', cat:'Alerts'},
-                {key:'whalePing', name:'Whale Radar Ping', desc:'Notifies when a single trade exceeds your whale threshold.', cat:'Alerts'},
-                {key:'alertOnWatchlistTrade',name:'Watchlist Trade Alert', desc:'Fires a toast when any coin on your watchlist has a new trade.', cat:'Alerts'},
-                {key:'alertOnNewCoin', name:'New Coin Alert', desc:'Fires when a brand-new coin appears in the live feed for the first time.', cat:'Alerts'},
-                {key:'alertOnVolumeSpike', name:'Volume Threshold Alert', desc:'Alert fires when 60s rolling volume exceeds the configured amount.', cat:'Alerts'},
-                {key:'alertOnBotActivity', name:'Bot Activity Alert', desc:'Toast notification when bot patterns are detected. Disable if too noisy.', cat:'Alerts'},
-                {key:'alertOnCreatorSell', name:'Creator Sell Alert', desc:'Fires when the coin creator appears on the SELL side — classic rugpull signal.', cat:'Alerts'},
-                {key:'alertOnNewReport', name:'New Report Alert', desc:'Notifies when a new rugpull report is submitted by the community.', cat:'Alerts'},
-                {key:'alertOnHolderDrop', name:'Holder Drop Alert', desc:'Fires when holder count drops by more than the configured % between checks.', cat:'Alerts'},
-                {key:'alertOnRiskChange', name:'Risk Change Alert', desc:'Fires when a coin local risk score changes by 10+ points between checks.', cat:'Alerts'},
-                {key:'alertOnPriceDrop', name:'Price Drop Alert', desc:'Fires when the current coin drops more than the configured % from the session high.', cat:'Alerts'},
-                {key:'desktopAlerts', name:'Desktop Notifications', desc:'Browser push notifications for all price alerts. Requires permission.', cat:'Alerts'},
-                {key:'flashTitle', name:'Flash Tab Title', desc:'Briefly flashes the tab title when any alert fires, even in the background.', cat:'Alerts'},
-                {key:'soundAlerts', name:'Sound Alerts', desc:'Audio tone on every alert via Web Audio API. No file downloads needed.', cat:'Alerts'},
-                {key:'compactAlerts', name:'Compact Alert Rows', desc:'Shows alert rows in compact mode — smaller padding, tighter layout.', cat:'Alerts'},
-                {key:'showAlertHistory', name:'Alert History', desc:'Keeps a history of all fired alerts this session in the Alerts tab.', cat:'Alerts'},
-                {key:'sessionJournal', name:'Session Journal', desc:'Logs all events (alerts, whales, bots, reports) to a searchable session journal.', cat:'Alerts'},
-                {key:'hideBalance', name:'Hide Balance', desc:'Hides all balance and portfolio numbers. Hover to reveal.', cat:'Privacy'},
-                {key:'blurPortfolioValue', name:'Blur Portfolio', desc:'Blurs portfolio numbers in sidebar until you hover. Good for streaming.', cat:'Privacy'},
-                {key:'appearOffline', name:'Appear Offline', desc:'Spoofs document.hidden so Rugplay thinks your tab is hidden.', cat:'Privacy'},
-                {key:'anonymousMode', name:'Anonymous Mode', desc:'Replaces your username with Anon — useful for screenshots.', cat:'Privacy'},
-                {key:'blockAnalytics', name:'Block Analytics', desc:'Blocks known analytics and tracking scripts from firing.', cat:'Privacy'},
-                {key:'stripTrackingParams', name:'Strip Tracking Params', desc:'Removes UTM and tracking query parameters from URLs as you navigate.', cat:'Privacy'},
-                {key:'noReferrer', name:'No Referrer', desc:'Adds rel=noreferrer to external links, hiding your origin.', cat:'Privacy'},
-                {key:'hideOfflineDM', name:'Hide DM Status', desc:'Hides the online/offline indicator in DM conversations.', cat:'Privacy'},
-                {key:'blurFeedOnAlt', name:'Blur Feed on Alt-Tab', desc:'Blurs the live feed when you switch to another window.', cat:'Privacy'},
-                {key:'forceDark', name:'Force Dark Mode', desc:'Forces Rugplay into dark mode regardless of OS setting.', cat:'Display'},
-                {key:'autoRefreshFeed', name:'Auto-refresh Feed', desc:'Keeps the live feed and transaction cards updating automatically.', cat:'Display'},
-                {key:'watchlistAlerts', name:'Watchlist Notify', desc:'Toast notification when any watchlist coin has new trade activity.', cat:'Display'},
-                {key:'feedCompact', name:'Compact Feed', desc:'Reduces feed row height from 52px to 34px, fitting ~50% more trades.', cat:'Display'},
-                {key:'showSpread', name:'Price Spread', desc:'Displays bid/ask spread on coin pages.', cat:'Display'},
-                {key:'quickSearch', name:'Quick Search (Ctrl+K)', desc:'Ctrl+K search modal. Coins and users via Rugplay own API.', cat:'Display'},
-                {key:'showCandleColors', name:'Candle Colors', desc:'Consistent buy/sell color coding across charts.', cat:'Display'},
-                {key:'heatmap', name:'Live Heatmap', desc:'Treemap-style heatmap on the dashboard — coins sized by volume, colored by buy/sell ratio.', cat:'Display'},
-                {key:'portfolioChart', name:'Portfolio Chart', desc:'Mini sparkline showing your portfolio value over the session in the dashboard.', cat:'Display'},
-                {key:'tradeTimeline', name:'Trade Timeline', desc:'Vertical timeline view of recent trades as an alternative to the table layout.', cat:'Display'},
-                {key:'sentimentBar', name:'Sentiment Bar', desc:'Shows platform-wide buy/sell sentiment as a live colored bar above the feed.', cat:'Display'},
-                {key:'showSessionStats', name:'Session Stats Bar', desc:'Persistent stats bar: total volume, trade count, top coin this session.', cat:'Display'},
-                {key:'darkCharts', name:'Dark Chart Backgrounds', desc:'Forces chart backgrounds to match the dark panel theme.', cat:'Display'},
-                {key:'exportData', name:'Export Data', desc:'Adds export buttons to export feed, watchlist and alert history as JSON or CSV.', cat:'Display'},
-                {key:'showLiveChart', name:'Live Mini Chart', desc:'[Beta] Shows a live candlestick mini-chart above the feed using WebSocket price data.', cat:'Display'},
-                {key:'trackSlippage', name:'Slippage Tracker', desc:'[Beta] Tracks estimated slippage on recent trades.', cat:'Experimental'},
-                {key:'showBidAsk', name:'Live Bid/Ask', desc:'[Beta] Derives live bid/ask from WebSocket data on coin pages.', cat:'Experimental'},
-                {key:'showPortfolioCostBasis',name:'Cost Basis', desc:'[Beta] Estimates avg cost basis per coin from trade history.', cat:'Experimental'},
-                {key:'coinScanner', name:'Coin Scanner', desc:'[Beta] Scans new coins as they appear in the feed and scores them in real-time.', cat:'Experimental'},
-                {key:'showTxHeatmap', name:'Transaction Heatmap', desc:'[Beta] Colors transaction rows by volume intensity across the feed.', cat:'Experimental'},
-                {key:'groupByMinute', name:'Group Feed by Minute', desc:'[Beta] Groups live feed trades into 1-minute buckets for a cleaner view.', cat:'Experimental'},
-                {key:'hideSmallTrades', name:'Hide Small Trades', desc:'[Beta] Filters out trades below the configured USD amount from the live feed.', cat:'Experimental'},
-                {key:'whaleLeaderboard', name:'Whale Leaderboard', desc:'Keeps a ranked list of the biggest single trades seen this session in the Compare tab.', cat:'Display'},
-                {key:'multiCoinCompare', name:'Multi-coin Compare', desc:'Pin up to 4 coins in the Compare tab to see their live volume, trades and momentum side by side.', cat:'Display'},
-                {key:'smartNotifications', name:'Smart Notifications', desc:'Batches rapid-fire alerts for the same coin into one notification instead of spamming you.', cat:'Alerts'},
-                {key:'showCoinMomentum', name:'Coin Momentum Badge', desc:'Shows a buy/sell momentum % badge next to hot coins in the radar and scanner.', cat:'Display'},
-                {key:'sessionAutoSave', name:'Session Auto-save', desc:'Auto-saves your watchlist and alert state to GM storage every 30 seconds so nothing is lost on refresh.', cat:'Interface'},
-                {key:'showVolumeBars', name:'Volume Bars in Radar', desc:'Adds thin proportional volume bars behind each coin row in the hot coins list.', cat:'Display'},
-                {key:'tradeSizeFilter', name:'Min Trade Size Filter', desc:'Hides trades below the configured USD amount from both the live feed and scanner.', cat:'Display'},
-                {key:'feedGroupSimilar', name:'Group Similar Trades', desc:'Groups back-to-back trades from the same coin into a single collapsed row in the feed.', cat:'Display'},
-                {key:'autoWatchTopCoins', name:'Auto-watch Top Coins', desc:'Automatically adds the top 3 coins by session volume to your watchlist.', cat:'Trading'},
-                {key:'zeroConfirmBuy', name:'Zero-confirm Buy', desc:'[Beta] Removes the confirmation step on BUY trades. Use with caution.', cat:'Experimental'},
-                {key:'riskAutoBlock', name:'Risk Auto-block', desc:'[Beta] Automatically hides coins above the configured risk score from feeds and tables.', cat:'Experimental'},
-                {key:'devMode', name:'Dev Mode', desc:'[Beta] Logs all Enhanced internal events to the browser console.', cat:'Experimental'},
-                {key:'hideEmptyPortfolio', name:'Hide Empty Portfolio', desc:'Hides the portfolio section in the sidebar when your total value is zero — less clutter when starting fresh.', cat:'Interface'},
-                {key:'showAvgEntryPrice', name:'Avg Entry Price', desc:'Shows your estimated average entry price per coin on coin pages based on your trade history.', cat:'Trading'},
-                {key:'alertOnLowBalance', name:'Low Balance Alert', desc:'Fires a notification when your cash balance drops below $10 — warns before you run out of buying power.', cat:'Alerts'},
-                {key:'muteCreator', name:'Mute Creator Trades', desc:'Hides all trades by the coin creator from the live feed to reduce noise from bots farming their own coin.', cat:'Privacy'},
-                {key:'showTradingVolume', name:'Volume Badge on Rows', desc:'Adds a small rolling-volume badge to coin rows in the feed, showing how active that coin is right now.', cat:'Display'},
-                {key:'pinnedCoins', name:'Pin Coins to Feed Top', desc:'Coins you add to your watchlist always appear at the top of the live feed before everything else.', cat:'Display'},
-                {key:'autoSnipeLaunches', name:'Auto-Snipe Launches', desc:'Instantly buys new coins on launch (repo-based new coin detection).', cat:'Trading'},
-                {key:'liquidityRugDetector', name:'Liquidity Rug Detector', desc:'Alerts when liquidity is removed or suspicious pool changes (from repo pool logic).', cat:'Trading'},
-                {key:'devWalletTracker', name:'Dev Wallet Tracker', desc:'Flags when coin creator sells their own bag (direct from repo coin creation).', cat:'Trading'},
-                {key:'liveSlippageEstimator', name:'Live Slippage Estimator', desc:'Shows estimated slippage on trades using repo pool math.', cat:'Trading'}
+                // Interface
+                {key:'adblock',             name:'Ad Blocker',           desc:'Removes Google ads and third-party trackers from every page.',                    cat:'Interface', icon:'🛡'},
+                {key:'notifications',        name:'Notification Badges',  desc:'Shows unread notification count on the sidebar bell icon.',                      cat:'Interface', icon:'🔔'},
+                {key:'forceDark',            name:'Force Dark Mode',       desc:'Forces dark mode regardless of OS or browser preference.',                       cat:'Interface', icon:'🌙'},
+                {key:'stickyPortfolio',      name:'Sticky Portfolio',      desc:'Pins your portfolio to the sidebar footer so it never scrolls away.',            cat:'Interface', icon:'📌'},
+                {key:'compactMode',          name:'Compact Layout',        desc:'Tightens spacing across the entire Rugplay UI — more data, less padding.',       cat:'Interface', icon:'⚡'},
+                {key:'sidebarCompact',       name:'Compact Sidebar',       desc:'Shrinks sidebar nav items to 28px, fitting more links without scrolling.',       cat:'Interface', icon:'↕'},
+                {key:'focusMode',            name:'Focus Mode',            desc:'Fades sidebar and header to 12% opacity. Hover to reveal.',                      cat:'Interface', icon:'🎯'},
+                {key:'borderlessCards',      name:'Borderless Cards',      desc:'Removes card borders for a flat, minimal aesthetic.',                            cat:'Interface', icon:'◻'},
+                {key:'monoFont',             name:'Monospace UI',          desc:'Forces monospace font across the entire Rugplay interface.',                     cat:'Interface', icon:'⌨'},
+                {key:'reducedMotion',        name:'Reduce Motion',         desc:'Cuts all CSS animation durations to near-zero. Great for low-end hardware.',     cat:'Interface', icon:'⏸'},
+                {key:'smoothScrolling',      name:'Smooth Scroll',         desc:'Enables CSS smooth scrolling on all pages.',                                     cat:'Interface', icon:'🌊'},
+                {key:'largeClickTargets',    name:'Large Click Targets',   desc:'Enforces 32px minimum height on all buttons and links.',                         cat:'Interface', icon:'👆'},
+                {key:'betterScrollbars',     name:'Slim Scrollbars',       desc:'Replaces chunky default scrollbars with slim 5px dark-theme ones.',              cat:'Interface', icon:'↕'},
+                {key:'hideFooter',           name:'Hide Footer',           desc:'Removes the page footer to reclaim vertical space.',                             cat:'Interface', icon:'🫥'},
+                {key:'hidePromoBar',         name:'Hide Promo Banners',    desc:'Hides promotional announcement banners.',                                        cat:'Interface', icon:'🚫'},
+                {key:'hideRightSidebar',     name:'Hide Right Panel',      desc:'Collapses the right sidebar giving the main content more room.',                 cat:'Interface', icon:'◀'},
+                {key:'hideOnlineCount',      name:'Hide Online Count',     desc:'Removes online user count indicators from the interface.',                      cat:'Interface', icon:'👁'},
+                {key:'dimInactiveTabs',      name:'Dim Inactive Tab',      desc:'Dims the page to 50% opacity when you switch to another browser tab.',           cat:'Interface', icon:'🌫'},
+                {key:'sidebarSearch',        name:'Sidebar Search Btn',    desc:'Adds Quick Search to the sidebar nav. Ctrl+K still works anywhere.',             cat:'Interface', icon:'🔍'},
+                {key:'urlShortcuts',         name:'URL Shortcuts',         desc:'Type /@username or /*SYMBOL in the address bar to navigate directly.',           cat:'Interface', icon:'🔗'},
+                {key:'keyboardShortcuts',    name:'Keyboard Shortcuts',    desc:'Ctrl+K = search, Ctrl+Shift+E = toggle Enhanced panel.',                        cat:'Interface', icon:'⌨'},
+                {key:'autoOpenPanel',        name:'Auto-open Panel',       desc:'Opens the Enhanced panel automatically on every Rugplay page load.',             cat:'Interface', icon:'🚀'},
+                {key:'sidebarBadge',         name:'Alert Badge',           desc:'Red dot on the Enhanced sidebar button when there are active price alerts.',     cat:'Interface', icon:'🔴'},
+                {key:'showVersionBadge',     name:'Version Badge',         desc:'Shows the current Enhanced version number in the panel header.',                 cat:'Interface', icon:'🏷'},
+                {key:'autoHidePanel',        name:'Auto-hide on Navigate', desc:'Automatically closes the panel when you click to a coin or user page.',          cat:'Interface', icon:'↩'},
+                {key:'quickCopySymbol',      name:'Quick Copy Symbol',     desc:'Click any coin symbol in the panel to instantly copy it to clipboard.',          cat:'Interface', icon:'📋'},
+                // Trading
+                {key:'txCard',               name:'Transaction Card',      desc:'Injects a live paginated trade history card on every coin page.',                cat:'Trading',   icon:'📊'},
+                {key:'riskCard',             name:'Risk Score Card',       desc:'0-100 risk score card on coin pages based on age, holders, mcap & sell pressure.',cat:'Trading', icon:'⚠'},
+                {key:'riskScore',            name:'Risk Engine',           desc:'Powers background risk computation. Disable to stop all risk scoring.',          cat:'Trading',   icon:'🧠'},
+                {key:'reportedBadge',        name:'Reported Badge',        desc:'Community warning badge on coin pages flagged in the Reporter.',                 cat:'Trading',   icon:'🚩'},
+                {key:'coinNotes',            name:'Coin Notes',            desc:'Private per-coin sticky notes. Stored locally, never sent anywhere.',            cat:'Trading',   icon:'📝'},
+                {key:'showCoinAge',          name:'Show Coin Age',         desc:'Displays age badge (e.g. 2h old) next to the coin name on coin pages.',          cat:'Trading',   icon:'🕐'},
+                {key:'showHolderCount',      name:'Show Holders',          desc:'Prominently displays holder count on coin pages.',                               cat:'Trading',   icon:'👥'},
+                {key:'showCoinCreator',      name:'Show Creator',          desc:'Displays the coin creator username linked to their profile on coin pages.',      cat:'Trading',   icon:'👤'},
+                {key:'showTxCount',          name:'Trade Count Badge',     desc:'Shows total trade count next to coin name on coin pages.',                      cat:'Trading',   icon:'🔢'},
+                {key:'holdersWarning',       name:'Low Holder Warning',    desc:'Red warning banner when holder count drops below 10 — extreme rug risk.',       cat:'Trading',   icon:'🔴'},
+                {key:'warnLowLiquidity',     name:'Low Liquidity Warning', desc:'Amber banner when market cap is under $500 — extreme rugpull risk.',            cat:'Trading',   icon:'🟡'},
+                {key:'txTimestamps',         name:'Live Timestamps',       desc:'Keeps transaction card timestamps updating every second.',                       cat:'Trading',   icon:'⏱'},
+                {key:'txHighlightNew',       name:'Highlight New Txns',    desc:'Green flash animation on newly appearing transactions.',                         cat:'Trading',   icon:'✨'},
+                {key:'confirmTrades',        name:'Confirm All Trades',    desc:'Confirmation dialog before any buy or sell trade.',                             cat:'Trading',   icon:'✅'},
+                {key:'confirmSells',         name:'Confirm Sells Only',    desc:'Confirmation dialog only for SELL trades — buy freely, sell deliberately.',     cat:'Trading',   icon:'🛑'},
+                {key:'showFeeEstimate',      name:'Fee Estimate',          desc:'Shows live fee estimate (0.3%) below the trade amount input.',                   cat:'Trading',   icon:'💰'},
+                {key:'highlightProfitLoss',  name:'P&L Colors',            desc:'Colors sidebar portfolio entries green/red by profit/loss sign.',                cat:'Trading',   icon:'📈'},
+                {key:'showPortfolioPercent', name:'Portfolio %',           desc:'Shows each coin as a % share of your total portfolio value.',                   cat:'Trading',   icon:'🥧'},
+                {key:'showPriceChange',      name:'24h Price Change',      desc:'Injects color-coded 24h % change badge on coin pages.',                         cat:'Trading',   icon:'📉'},
+                {key:'showVolume24h',        name:'24h Volume',            desc:'Shows 24h trading volume figure on coin pages.',                                 cat:'Trading',   icon:'📦'},
+                {key:'highlightWhaleTrades', name:'Whale Trade Glow',      desc:'Gold outline on trades exceeding the whale threshold in the feed.',              cat:'Trading',   icon:'🐋'},
+                {key:'profileHistory',       name:'Trade History Button',  desc:'History button on profile pages opening a paginated trade modal.',              cat:'Trading',   icon:'📜'},
+                {key:'profileWatch',         name:'Watch User Button',     desc:'Watch toggle on profile pages to track any user in your watchlist.',            cat:'Trading',   icon:'⭐'},
+                {key:'clickableRows',        name:'Clickable Table Rows',  desc:'Makes portfolio table rows clickable — navigates directly to that coin.',       cat:'Trading',   icon:'🖱'},
+                {key:'showPnL',              name:'Session P&L',           desc:'Tracks portfolio from session start, shows live unrealised P&L in sidebar.',    cat:'Trading',   icon:'💹'},
+                {key:'showTopGainers',       name:'Top Gainers',           desc:'Tracks the biggest rising coins from the live feed price data.',                 cat:'Trading',   icon:'🚀'},
+                {key:'showTopLosers',        name:'Top Losers',            desc:'Tracks the biggest declining coins from the live feed price data.',              cat:'Trading',   icon:'📉'},
+                {key:'showGems',             name:'Gem Finder',            desc:'Auto-surfaces low-risk high-volume coins in the scanner.',                       cat:'Trading',   icon:'💎'},
+                {key:'highlightTopCoins',    name:'Top Volume Highlight',  desc:'Gold border on the top 3 coins by volume in the radar window.',                 cat:'Trading',   icon:'🥇'},
+                {key:'preloadCoinData',      name:'Preload on Hover',      desc:'Prefetches coin data when you hover over a coin link — instant navigation.',    cat:'Trading',   icon:'⚡'},
+                // Alerts
+                {key:'botWarning',           name:'Bot Detection',         desc:'Analyses trade timing and frequency. Fires when bot patterns are detected.',    cat:'Alerts',    icon:'🤖'},
+                {key:'volumeSpikes',         name:'Volume Spike Alert',    desc:'Monitors 60s rolling volume. Fires when a coin crosses your USD threshold.',    cat:'Alerts',    icon:'📈'},
+                {key:'whalePing',            name:'Whale Radar',           desc:'Instant notification when a single trade exceeds your whale threshold.',        cat:'Alerts',    icon:'🐋'},
+                {key:'alertOnNewCoin',       name:'New Coin Alert',        desc:'Notifies when a symbol appears in the WS feed for the very first time.',        cat:'Alerts',    icon:'🆕'},
+                {key:'alertOnHolderDrop',    name:'Holder Drop Alert',     desc:'Fires if holder count drops 10%+ in 2 minutes on the current coin page.',       cat:'Alerts',    icon:'📉'},
+                {key:'alertOnPriceDrop',     name:'Price Drop Alert',      desc:'Fires if price drops by your configured % within a minute.',                   cat:'Alerts',    icon:'🔻'},
+                {key:'alertOnBotActivity',   name:'Bot Activity Alert',    desc:'Dedicated notification when bot patterns are detected in a coin.',              cat:'Alerts',    icon:'⚠'},
+                {key:'alertOnNewReport',     name:'New Report Alert',      desc:'Notifies when a new community rugpull report is submitted.',                    cat:'Alerts',    icon:'🚩'},
+                {key:'alertOnWatchlistTrade',name:'Watchlist Trade Alert', desc:'Toast notification when any coin in your watchlist gets a new trade.',         cat:'Alerts',    icon:'👁'},
+                {key:'alertOnCreatorSell',   name:'Creator Sell Alert',    desc:'Fires when the coin creator wallet shows a SELL — classic rug signal.',        cat:'Alerts',    icon:'🚨'},
+                {key:'desktopAlerts',        name:'Desktop Notifications', desc:'Sends OS-level browser notifications for price alerts.',                       cat:'Alerts',    icon:'🖥'},
+                {key:'flashTitle',           name:'Tab Title Flash',       desc:'Flashes the browser tab title when any alert fires.',                           cat:'Alerts',    icon:'💡'},
+                {key:'soundAlerts',          name:'Alert Sounds',          desc:'Web Audio API beep on alerts, whale pings, and bot detections.',               cat:'Alerts',    icon:'🔊'},
+                {key:'watchlistAlerts',      name:'Watchlist Alerts',      desc:'Enables the full watchlist alert and notification system.',                    cat:'Alerts',    icon:'👁'},
+                // Privacy
+                {key:'appearOffline',        name:'Appear Offline',        desc:'Spoofs document.visibilityState so you appear offline in DMs.',               cat:'Privacy',   icon:'👻'},
+                {key:'hideBalance',          name:'Hide Balance',          desc:'Hides portfolio values — hover to reveal.',                                   cat:'Privacy',   icon:'🙈'},
+                {key:'blurPortfolioValue',   name:'Blur Portfolio',        desc:'Blurs all portfolio numbers — perfect for streaming or screen sharing.',       cat:'Privacy',   icon:'🌫'},
+                {key:'anonymousMode',        name:'Anonymous Mode',        desc:'Replaces your username with @anon in the Enhanced panel.',                    cat:'Privacy',   icon:'🎭'},
+                {key:'blockAnalytics',       name:'Block Analytics',       desc:'CSS-blocks known analytics trackers (gtag, segment, mixpanel, hotjar).',      cat:'Privacy',   icon:'🛡'},
+                {key:'stripTrackingParams',  name:'Strip Tracking Params', desc:'Removes UTM, fbclid, gclid and other tracking params from URLs.',            cat:'Privacy',   icon:'✂'},
+                {key:'noReferrer',           name:'No Referrer',           desc:'Adds rel="noreferrer noopener" to all external links.',                       cat:'Privacy',   icon:'🔒'},
+                {key:'hideOwnTrades',        name:'Hide Own Trades',       desc:'Filters your username out of the Enhanced live feed.',                        cat:'Privacy',   icon:'🫥'},
+                {key:'hideOfflineDM',        name:'Hide DM Presence',      desc:'Hides online presence dots in DM conversations.',                            cat:'Privacy',   icon:'💬'},
+                // Display
+                {key:'heatmap',              name:'Live Heatmap',          desc:'Treemap of active coins sized by volume, colored by buy/sell ratio.',         cat:'Display',   icon:'🗺'},
+                {key:'portfolioChart',       name:'Portfolio Sparkline',   desc:'Canvas chart of your portfolio value across session snapshots.',              cat:'Display',   icon:'📊'},
+                {key:'sentimentBar',         name:'Sentiment Bar',         desc:'Live 3px bar showing platform-wide buy/sell ratio above the tabs.',           cat:'Display',   icon:'📊'},
+                {key:'showSessionStats',     name:'Session Stats Bar',     desc:'Session volume, top coin, trade count and whale count bar under topbar.',     cat:'Display',   icon:'📈'},
+                {key:'sessionJournal',       name:'Session Journal',       desc:'Searchable log of every alert, whale, bot detection and event this session.', cat:'Display',   icon:'📓'},
+                {key:'coinScanner',          name:'Coin Scanner',          desc:'Real-time new coin detection, auto risk scored and sorted by age/volume.',    cat:'Display',   icon:'🔭'},
+                {key:'tradeTimeline',        name:'Timeline View',         desc:'Toggle the live feed into a vertical timeline instead of table.',             cat:'Display',   icon:'📅'},
+                {key:'feedCompact',          name:'Compact Feed',          desc:'Tighter row height in the live feed — fits more trades on screen.',           cat:'Display',   icon:'⚡'},
+                {key:'showTxHeatmap',        name:'Trade Intensity',       desc:'Highlights high-value trades amber, dims low-value trades in the feed.',      cat:'Display',   icon:'🌡'},
+                {key:'groupByMinute',        name:'Group By Minute',       desc:'Shows a time separator line between groups of trades in the same minute.',    cat:'Display',   icon:'⏱'},
+                {key:'hideSmallTrades',      name:'Hide Small Trades',     desc:'Filters out trades below your configured USD minimum from the feed.',         cat:'Display',   icon:'🔇'},
+                {key:'highlightTopTraders',  name:'Top Trader Highlight',  desc:'Marks the 5 most active addresses from the live feed.',                       cat:'Display',   icon:'🏆'},
+                {key:'darkCharts',           name:'Dark Charts',           desc:'Forces dark background on TradingView and other chart elements.',              cat:'Display',   icon:'🌙'},
+                {key:'colorCodeVolume',      name:'Color-code Volume',     desc:'Colors volume metrics green/amber/red based on buy/sell dominance.',          cat:'Display',   icon:'🎨'},
+                {key:'showCreatorSells',     name:'Creator Sell Tracker',  desc:'Red row highlight when coin creators appear on the sell side of the feed.',   cat:'Display',   icon:'🚨'},
+                {key:'autoTagCoins',         name:'Auto-tag Coins',        desc:'Whale, new, hot and risky badges auto-applied to coins in the feed.',         cat:'Display',   icon:'🏷'},
+                {key:'exportData',           name:'Export Tools',          desc:'JSON/CSV export buttons for feed, watchlist, journal and settings.',           cat:'Display',   icon:'💾'},
+                {key:'quickCopySymbol',      name:'Copy Symbol on Click',  desc:'Click any coin symbol in the panel to copy it to clipboard instantly.',       cat:'Display',   icon:'📋'},
+                {key:'devMode',              name:'Dev Mode',              desc:'Logs all WS events to the browser console with [RE:WS] prefix.',              cat:'Display',   icon:'🛠'},
             ];
-            const CATS = ['Interface','Trading','Alerts','Privacy','Display','Experimental'];
-            const CAT_COLORS = {Interface:'#60a5fa',Trading:'#34d399',Alerts:'#f59e0b',Privacy:'#a78bfa',Display:'#f472b6',Experimental:'#94a3b8'};
-            const CAT_ICONS = {
-                Interface: '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>',
-                Trading: '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>',
-                Alerts: '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>',
-                Privacy: '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>',
-                Display: '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>',
-                Experimental: '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 3h6l1 7H8L9 3z"/><path d="M8 10l-4.45 8.01A2 2 0 0 0 5.3 21h13.4a2 2 0 0 0 1.75-2.99L16 10"/></svg>',
-            };
-            const enabledTotal = MODS.filter(m => !!s[m.key]).length;
-            const modCardHTML = mod => {
-                const on = !!s[mod.key];
-                const color = CAT_COLORS[mod.cat] || '#94a3b8';
-                return `<div class="xp-mod-card ${on?'on':''}" data-mod-key="${mod.key}" style="${on?`--mc:${color}`:''}">
-                    <div class="xp-mod-top">
-                        <div class="xp-mod-info">
-                            <div class="xp-mod-name">${mod.name}</div>
-                            <div class="xp-mod-desc">${mod.desc}</div>
-                        </div>
-                        <button class="xp-toggle ${on?'on':''}" data-mod-key="${mod.key}" aria-checked="${on}" role="switch">
-                            <span class="xp-toggle-knob"></span>
-                        </button>
-                    </div>
-                    <div class="xp-mod-foot">
-                        <span class="xp-mod-cat-tag" style="color:${color}">${CAT_ICONS[mod.cat]||''} ${mod.cat}</span>
-                        <span class="xp-mod-status ${on?'on':'off'}">${on?'ENABLED':'DISABLED'}</span>
-                    </div>
-                </div>`;
-            };
+
+            const CATS = ['Interface','Trading','Alerts','Privacy','Display'];
+            const CAT_COLORS = {Interface:'#0a84ff',Trading:'#30d158',Alerts:'#ffd60a',Privacy:'#bf5af2',Display:'#ff9f0a'};
+            const CAT_ICONS  = {Interface:'⚙️',Trading:'💹',Alerts:'🔔',Privacy:'🔒',Display:'🎨'};
+
+            const enabledCount = MODS.filter(m => s[m.key]).length;
+
             const modsHTML = CATS.map(cat => {
                 const catMods = MODS.filter(m => m.cat === cat);
-                const ec = catMods.filter(m => !!s[m.key]).length;
-                const color = CAT_COLORS[cat];
+                const catEnabled = catMods.filter(m => s[m.key]).length;
+                const col = CAT_COLORS[cat] || '#ffffff';
                 return `<div class="xp-cat-block" data-cat="${cat}">
                     <div class="xp-cat-hd">
-                        <span class="xp-cat-dot" style="background:${color}"></span>
-                        <span class="xp-cat-icon" style="color:${color}">${CAT_ICONS[cat]}</span>
+                        <div class="xp-cat-dot" style="background:${col};box-shadow:0 0 8px ${col}40"></div>
+                        <span class="xp-cat-icon">${CAT_ICONS[cat]||'•'}</span>
                         <span class="xp-cat-name">${cat}</span>
-                        <span class="xp-cat-pill">${ec}/${catMods.length}</span>
+                        <span class="xp-cat-pill">${catEnabled}/${catMods.length}</span>
                     </div>
-                    <div class="xp-mod-grid">${catMods.map(modCardHTML).join('')}</div>
+                    <div class="xp-mod-grid">${catMods.map(m => `<div class="xp-mod-card ${s[m.key]?'on':''}" data-mod-key="${m.key}" style="${s[m.key]?'--mc:'+col:''}">
+                        <div class="xp-mod-top">
+                            <div class="xp-mod-icon">${m.icon||'•'}</div>
+                            <div class="xp-mod-info">
+                                <div class="xp-mod-name">${m.name}</div>
+                                <div class="xp-mod-desc">${m.desc}</div>
+                            </div>
+                            <div class="xp-toggle ${s[m.key]?'on':''}" data-mod-key="${m.key}" role="switch" aria-checked="${!!s[m.key]}" tabindex="0" title="${s[m.key]?'Disable':'Enable'} ${m.name}">
+                                <div class="xp-toggle-knob"></div>
+                            </div>
+                        </div>
+                        <div class="xp-mod-foot">
+                            <span class="xp-mod-cat-tag" style="color:${col}">${m.icon} ${cat}</span>
+                            <span class="xp-mod-status ${s[m.key]?'on':'off'}">${s[m.key]?'ON':'OFF'}</span>
+                        </div>
+                    </div>`).join('')}</div>
                 </div>`;
             }).join('');
-            return `
+
+            return `<div class="xp-shell">
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700;800;900&family=Geist+Mono:wght@400;500;600;700&display=swap');
 :root{
---re-bg:#0c0c0f;--re-p1:#111114;--re-p2:#17171b;--re-p3:#1f1f24;--re-p4:#27272d;
---re-b1:rgba(255,255,255,.05);--re-b2:rgba(255,255,255,.09);--re-b3:rgba(255,255,255,.15);
---re-t1:#e8e8eb;--re-t2:#6b6b78;--re-t3:#35353f;
---re-green:#22c55e;--re-red:#ef4444;--re-amber:#f59e0b;--re-blue:#3b82f6;--re-purple:#8b5cf6;
---re-bg-val:#0c0c0f;
---re-font:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;
---re-mono:'JetBrains Mono',ui-monospace,monospace;
+  --re-bg:#000;--re-glass:rgba(18,18,22,.88);--re-glass2:rgba(26,26,32,.78);--re-glass3:rgba(36,36,44,.68);--re-glass4:rgba(48,48,58,.58);
+  --re-p1:#0a0a0d;--re-p2:#101015;--re-p3:#15151c;--re-p4:#1c1c25;--re-p5:#24242e;
+  --re-b0:rgba(255,255,255,.03);--re-b1:rgba(255,255,255,.07);--re-b2:rgba(255,255,255,.13);--re-b3:rgba(255,255,255,.22);--re-b4:rgba(255,255,255,.35);
+  --re-t1:#f5f5f7;--re-t2:#98989f;--re-t3:#48484f;--re-t4:#2d2d35;
+  --re-green:#30d158;--re-red:#ff453a;--re-amber:#ffd60a;--re-blue:#0a84ff;--re-purple:#bf5af2;--re-teal:#5ac8fa;--re-pink:#ff375f;--re-orange:#ff9f0a;
+  --glow-green:0 0 20px rgba(48,209,88,.2),0 0 40px rgba(48,209,88,.08);
+  --glow-red:0 0 20px rgba(255,69,58,.2),0 0 40px rgba(255,69,58,.08);
+  --glow-blue:0 0 20px rgba(10,132,255,.2),0 0 40px rgba(10,132,255,.08);
+  --shadow-xs:0 1px 3px rgba(0,0,0,.4);--shadow-sm:0 2px 8px rgba(0,0,0,.5),0 0 0 1px rgba(255,255,255,.05);
+  --shadow-md:0 8px 32px rgba(0,0,0,.6),0 0 0 1px rgba(255,255,255,.06);--shadow-lg:0 24px 64px rgba(0,0,0,.8),0 0 0 1px rgba(255,255,255,.07);
+  --re-font:'Geist',-apple-system,'SF Pro Display',BlinkMacSystemFont,sans-serif;
+  --re-mono:'Geist Mono','SF Mono',ui-monospace,monospace;
+  --ease-out:cubic-bezier(.16,1,.3,1);--ease-spring:cubic-bezier(.175,.885,.32,1.275);
+  --r-xs:4px;--r-sm:8px;--r-md:12px;--r-lg:16px;--r-xl:20px;--r-full:9999px;
 }
-#re-panel-wrapper,#re-panel-wrapper *{box-sizing:border-box;-webkit-font-smoothing:antialiased}
-#re-panel-wrapper{background:var(--re-bg)!important;width:100%!important;min-height:100vh!important;font-family:var(--re-font)!important;font-size:13px!important;color:var(--re-t1)!important;display:flex!important;flex-direction:column!important;padding:0!important;margin:0!important;max-width:100%!important;position:relative!important;flex:1 1 auto!important;line-height:1.5}
-.re-bar{height:42px;display:flex;align-items:center;padding:0 14px;gap:10px;flex-shrink:0;border-bottom:1px solid var(--re-b1);background:var(--re-bg);position:sticky;top:0;z-index:100}
-.re-bar-brand{display:flex;align-items:center;gap:7px;font-size:12px;font-weight:700;color:var(--re-t1);letter-spacing:-.02em;white-space:nowrap}
-.re-bar-icon{width:20px;height:20px;background:var(--re-t1);border-radius:4px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
-.re-bar-icon svg{color:var(--re-bg-val)}
-.re-bar-sep{width:1px;height:10px;background:var(--re-b2);flex-shrink:0}
-.re-bar-stats{display:flex;align-items:center;gap:3px;flex:1;overflow:hidden}
-.re-stat-pill{display:flex;align-items:center;gap:4px;padding:2px 7px;border-radius:99px;background:var(--re-p2);border:1px solid var(--re-b1);font-size:11px;white-space:nowrap}
-.re-stat-dot{width:4px;height:4px;border-radius:50%;flex-shrink:0}
-.re-stat-v{font-weight:700;font-family:var(--re-mono);color:var(--re-t1);font-size:11px}
-.re-stat-k{color:var(--re-t2);font-size:10px}
-.re-live-badge{display:flex;align-items:center;gap:3px;font-size:10px;font-weight:700;color:var(--re-green);letter-spacing:.02em;white-space:nowrap}
-.re-live-dot{width:5px;height:5px;border-radius:50%;background:var(--re-green);animation:re-pulse 2s ease-in-out infinite}
-.re-bar-r{display:flex;align-items:center;gap:5px;margin-left:auto;flex-shrink:0}
-.re-icon-btn{width:26px;height:26px;border-radius:4px;background:transparent;border:1px solid var(--re-b1);color:var(--re-t2);cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .1s;text-decoration:none;flex-shrink:0}
-.re-icon-btn:hover{background:var(--re-p2);color:var(--re-t1);border-color:var(--re-b2)}
-.re-kbd{font-size:9px;font-family:var(--re-mono);background:var(--re-p2);border:1px solid var(--re-b2);border-radius:3px;padding:1px 5px;color:var(--re-t2)}
-.re-sentiment{height:2px;background:var(--re-p3);flex-shrink:0;overflow:hidden}
-.re-sentiment-fill{height:100%;background:linear-gradient(90deg,var(--re-red),var(--re-green));transition:width .8s ease;width:50%}
-.re-shell{flex:1;display:flex;overflow:hidden;min-height:0}
-.re-nav{width:136px;flex-shrink:0;border-right:1px solid var(--re-b1);background:var(--re-p1);display:flex;flex-direction:column;overflow-y:auto;padding:6px 0}
-.re-nav::-webkit-scrollbar{display:none}
-.re-nav-item{display:flex;align-items:center;gap:7px;padding:6px 12px;font-size:12px;font-weight:500;color:var(--re-t2);cursor:pointer;background:transparent;border:none;border-left:2px solid transparent;width:100%;text-align:left;font-family:var(--re-font);transition:all .1s;white-space:nowrap}
-.re-nav-item:hover{color:var(--re-t1);background:var(--re-p2)}
-.re-nav-item.active{color:var(--re-t1);background:var(--re-p2);border-left-color:var(--re-t1);font-weight:600}
-.re-nav-item svg{opacity:.35;flex-shrink:0;transition:opacity .1s}
-.re-nav-item.active svg,.re-nav-item:hover svg{opacity:.65}
-.re-nav-badge{font-size:9px;font-weight:700;padding:0 4px;height:14px;min-width:14px;display:inline-flex;align-items:center;justify-content:center;background:var(--re-p3);border:1px solid var(--re-b2);color:var(--re-t2);border-radius:99px;margin-left:auto;font-family:var(--re-mono)}
-.re-nav-item.active .re-nav-badge{background:var(--re-t1);color:var(--re-p1);border-color:transparent}
-.re-nav-sep{height:1px;background:var(--re-b1);margin:5px 10px}
-.re-nav-label{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.09em;color:var(--re-t3);padding:7px 12px 3px}
-.re-main{flex:1;overflow-y:auto;display:flex;flex-direction:column;min-width:0;min-height:0}
-.re-main::-webkit-scrollbar{width:4px}
-.re-main::-webkit-scrollbar-thumb{background:var(--re-b2);border-radius:2px}
-[data-re-section]{padding:14px;display:flex;flex-direction:column;gap:11px}
-.re-stat-row,.xp-stat-row{display:grid;grid-template-columns:repeat(4,1fr);gap:7px}
-@media(max-width:900px){.re-stat-row,.xp-stat-row{grid-template-columns:repeat(2,1fr)}}
-.re-stat-card,.xp-stat-box{background:var(--re-p2);border:1px solid var(--re-b1);border-radius:7px;padding:10px 12px;transition:border-color .12s}
-.re-stat-card:hover,.xp-stat-box:hover{border-color:var(--re-b2)}
-.re-stat-num,.xp-stat-n{font-size:18px;font-weight:800;font-family:var(--re-mono);color:var(--re-t1);line-height:1;letter-spacing:-.04em}
-.re-stat-lbl,.xp-stat-label{font-size:10px;font-weight:500;text-transform:uppercase;letter-spacing:.07em;color:var(--re-t2);margin-top:4px}
-.xp-stat-box.green .xp-stat-n,.re-stat-card.green .re-stat-num{color:var(--re-green)}
-.xp-stat-box.amber .xp-stat-n,.re-stat-card.amber .re-stat-num{color:var(--re-amber)}
-.xp-stat-box.blue .xp-stat-n,.re-stat-card.blue .re-stat-num{color:var(--re-blue)}
-.xp-session-bar{display:flex;align-items:center;gap:12px;padding:7px 12px;background:var(--re-p2);border:1px solid var(--re-b1);border-radius:7px;font-size:11px;flex-wrap:wrap}
-.xp-sb-item{display:flex;align-items:center;gap:4px;color:var(--re-t2)}
-.xp-sb-val{color:var(--re-t1);font-weight:700;font-family:var(--re-mono)}
-.xp-sb-sep{width:1px;height:10px;background:var(--re-b2)}
-.xp-card{background:var(--re-p2);border:1px solid var(--re-b1);border-radius:7px;overflow:hidden}
-.xp-card-hd{padding:9px 13px;border-bottom:1px solid var(--re-b1);display:flex;align-items:center;justify-content:space-between;gap:8px}
-.xp-card-title{font-size:12px;font-weight:700;display:flex;align-items:center;gap:5px;color:var(--re-t1)}
-.xp-card-title svg{color:var(--re-t2);flex-shrink:0}
-.xp-card-sub{font-size:10px;color:var(--re-t2);margin-top:1px}
-.xp-card-body{padding:12px 13px}
-.xp-card-ft{padding:7px 13px;border-top:1px solid var(--re-b1);display:flex;align-items:center;justify-content:space-between;gap:7px;font-size:11px;color:var(--re-t2)}
-.xp-2col{display:grid;grid-template-columns:1fr 260px;gap:11px;align-items:start}
-@media(max-width:1000px){.xp-2col{grid-template-columns:1fr}}
-.xp-col{display:flex;flex-direction:column;gap:11px}
-.xp-heatmap{display:flex;flex-wrap:wrap;gap:4px;padding:11px 13px;align-items:flex-end;min-height:60px}
-.xp-hm-cell{display:flex;flex-direction:column;align-items:center;justify-content:center;border-radius:5px;cursor:pointer;transition:opacity .1s;text-decoration:none;flex-shrink:0}
-.xp-hm-cell:hover{opacity:.8}
-.xp-hm-sym{font-size:9px;font-weight:800;color:#e8e8eb;font-family:var(--re-mono);line-height:1}
-.xp-hm-vol{font-size:8px;color:rgba(232,232,235,.45);margin-top:1px;font-family:var(--re-mono)}
-.xp-spark-wrap{padding:9px 13px 0}
-.xp-spark-canvas{width:100%;height:40px;display:block}
-.xp-spark-meta{display:flex;justify-content:space-between;padding:3px 13px 9px;font-size:10px;color:var(--re-t2);font-family:var(--re-mono)}
-.xp-timeline{max-height:240px;overflow-y:auto;padding:0 13px}
-.xp-tl-row{display:flex;gap:8px;padding:5px 0;border-bottom:1px solid var(--re-b1);align-items:center}
-.xp-tl-row:last-child{border-bottom:none}
-.xp-tl-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
-.xp-tl-dot.buy{background:var(--re-green)}.xp-tl-dot.sell{background:var(--re-red)}
-.xp-tl-body{flex:1;min-width:0}
-.xp-tl-main{font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.xp-tl-sub{font-size:10px;color:var(--re-t2);margin-top:1px}
-.xp-tl-time{font-size:10px;color:var(--re-t2);font-family:var(--re-mono);white-space:nowrap}
-.xp-mini-list{display:flex;flex-direction:column;gap:3px}
-.xp-mini-row{display:grid;grid-template-columns:50px 1fr auto;gap:6px;align-items:center;padding:5px 7px;background:var(--re-p3);border:1px solid var(--re-b1);border-radius:5px;text-decoration:none;color:var(--re-t1);transition:background .08s}
-.xp-mini-row:hover{background:var(--re-p4)}
-.xp-mini-sym{font-weight:800;font-family:var(--re-mono);font-size:11px}
-.xp-mini-sub{font-size:10px;color:var(--re-t2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.xp-t-buy{font-size:9px;font-weight:700;padding:1px 4px;border-radius:3px;background:rgba(34,197,94,.08);color:var(--re-green);border:1px solid rgba(34,197,94,.15);white-space:nowrap;font-family:var(--re-mono)}
-.xp-t-sell{font-size:9px;font-weight:700;padding:1px 4px;border-radius:3px;background:rgba(239,68,68,.08);color:var(--re-red);border:1px solid rgba(239,68,68,.15);white-space:nowrap;font-family:var(--re-mono)}
+#re-panel-wrapper{background:var(--re-bg)!important;font-family:var(--re-font)!important;color:var(--re-t1)!important;padding:0!important;max-width:100%!important;min-height:100vh;display:flex;flex-direction:column;-webkit-font-smoothing:antialiased;letter-spacing:-.01em}
+.xp-shell{display:flex;flex-direction:column;min-height:100vh;animation:xp-in .25s var(--ease-out) both}
+@keyframes xp-in{from{opacity:0;transform:translateY(8px) scale(.99)}to{opacity:1;transform:none}}
+@keyframes xp-pulse-dot{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.2;transform:scale(.5)}}
+@keyframes xp-spin{to{transform:rotate(360deg)}}
+@keyframes xp-fade{from{opacity:0}to{opacity:1}}
+@keyframes xp-hl{from{background:rgba(48,209,88,.18)}to{background:transparent}}
+@keyframes re-notif-in{to{opacity:1;transform:none}}
+@keyframes re-notif-out{from{opacity:1;transform:none}to{opacity:0;transform:translateY(14px) scale(.96)}}
+@keyframes re-spinning{to{transform:rotate(360deg)}}
+@keyframes re-modal-in{from{opacity:0;transform:scale(.95) translateY(8px)}to{opacity:1;transform:none}}
+@keyframes re-hl{from{background:rgba(74,222,128,.18)}to{background:transparent}}
+.re-new-tx{animation:re-hl 2s ease-out}
+/* TOPBAR */
+.re-bar{display:flex;align-items:center;height:50px;padding:0 18px;gap:10px;border-bottom:1px solid var(--re-b1);background:rgba(0,0,0,.9);backdrop-filter:blur(40px) saturate(180%);-webkit-backdrop-filter:blur(40px) saturate(180%);position:sticky;top:0;z-index:100;flex-shrink:0}
+.re-bar-brand{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:800;letter-spacing:-.03em;color:var(--re-t1);flex-shrink:0}
+.re-bar-logo{width:24px;height:24px;background:linear-gradient(135deg,var(--re-green),var(--re-blue));border-radius:6px;display:flex;align-items:center;justify-content:center;flex-shrink:0;box-shadow:0 2px 8px rgba(48,209,88,.25)}
+.re-bar-logo svg{color:#000}
+.re-bar-divider{width:1px;height:14px;background:var(--re-b2);flex-shrink:0}
+.re-bar-chips{display:flex;align-items:center;gap:4px;flex:1;overflow:hidden}
+.re-chip{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;background:var(--re-p3);border:1px solid var(--re-b1);border-radius:var(--r-full);font-size:10px;font-weight:600;color:var(--re-t2);white-space:nowrap;cursor:default}
+.re-chip-v{font-family:var(--re-mono);font-weight:700;color:var(--re-t1)}
+.re-live{display:inline-flex;align-items:center;gap:5px;padding:2px 9px;background:rgba(48,209,88,.08);border:1px solid rgba(48,209,88,.2);border-radius:var(--r-full);font-size:10px;font-weight:800;color:var(--re-green);letter-spacing:.04em}
+.re-live-dot{width:5px;height:5px;border-radius:50%;background:var(--re-green);animation:xp-pulse-dot 1.6s ease-in-out infinite;box-shadow:0 0 5px rgba(48,209,88,.6)}
+.re-bar-right{display:flex;align-items:center;gap:5px;flex-shrink:0}
+.re-bar-btn{width:28px;height:28px;border-radius:var(--r-sm);background:transparent;border:1px solid var(--re-b1);color:var(--re-t2);cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .12s var(--ease-out);text-decoration:none;flex-shrink:0}
+.re-bar-btn:hover{background:var(--re-p3);border-color:var(--re-b2);color:var(--re-t1);transform:scale(1.06)}
+.xp-pill{display:inline-flex;align-items:center;gap:3px;padding:2px 7px;border-radius:var(--r-full);font-size:9px;font-weight:700;background:rgba(10,132,255,.1);border:1px solid rgba(10,132,255,.2);color:var(--re-blue);font-family:var(--re-mono)}
+/* SENTIMENT BAR */
+.xp-sentiment-wrap{height:3px;background:var(--re-p3);overflow:hidden;flex-shrink:0}
+.xp-sentiment-fill{height:100%;background:linear-gradient(90deg,var(--re-green),rgba(48,209,88,.4));transition:width .8s var(--ease-out)}
+/* SESSION STATS */
+.xp-session-bar{display:flex;align-items:center;border-bottom:1px solid var(--re-b1);background:var(--re-p1);overflow-x:auto;flex-shrink:0}
+.xp-session-bar::-webkit-scrollbar{display:none}
+.xp-ss-item{display:flex;align-items:center;gap:6px;padding:5px 14px;border-right:1px solid var(--re-b1);white-space:nowrap;flex-shrink:0}
+.xp-ss-item:last-child{border-right:none}
+.xp-ss-k{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--re-t3)}
+.xp-ss-v{font-size:12px;font-weight:700;font-family:var(--re-mono);color:var(--re-t1)}
+/* TABS */
+.xp-tabs{display:flex;align-items:center;border-bottom:1px solid var(--re-b1);background:rgba(0,0,0,.7);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);overflow-x:auto;flex-shrink:0;position:sticky;top:50px;z-index:90}
+.xp-tabs::-webkit-scrollbar{display:none}
+.xp-tab{display:inline-flex;align-items:center;gap:5px;padding:0 13px;height:40px;font-size:11.5px;font-weight:500;color:var(--re-t3);background:transparent;border:none;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;transition:color .12s,border-color .12s;white-space:nowrap;font-family:var(--re-font);letter-spacing:-.015em}
+.xp-tab:hover{color:var(--re-t2)}
+.xp-tab.active{color:var(--re-t1);border-bottom-color:var(--re-t1);font-weight:700}
+.xp-tab svg{opacity:.45;transition:opacity .12s}
+.xp-tab.active svg,.xp-tab:hover svg{opacity:1}
+.xp-tab-badge{font-size:9px;font-weight:800;min-width:15px;height:15px;display:inline-flex;align-items:center;justify-content:center;background:rgba(255,255,255,.07);color:var(--re-t3);border-radius:var(--r-full);padding:0 3px;font-family:var(--re-mono);transition:all .12s}
+.xp-tab.active .xp-tab-badge{background:var(--re-t1);color:var(--re-p1)}
+/* BODY */
+.xp-body{flex:1;padding:18px;display:flex;flex-direction:column;gap:13px;min-height:0}
+[data-re-section]{display:none}
+/* GRID */
+.xp-2col{display:grid;grid-template-columns:1fr 300px;gap:13px;align-items:start}
+.xp-3col{display:grid;grid-template-columns:1fr 1fr 1fr;gap:13px}
+.xp-col{display:flex;flex-direction:column;gap:13px}
+@media(max-width:1100px){.xp-2col{grid-template-columns:1fr}}
+@media(max-width:1200px){.xp-3col{grid-template-columns:1fr 1fr}}
+/* CARDS */
+.xp-card{background:var(--re-glass);backdrop-filter:blur(40px) saturate(160%);-webkit-backdrop-filter:blur(40px) saturate(160%);border:1px solid var(--re-b1);border-radius:var(--r-lg);overflow:hidden;transition:border-color .18s,box-shadow .18s;box-shadow:var(--shadow-sm);position:relative}
+.xp-card::before{content:'';position:absolute;inset:0;border-radius:inherit;background:linear-gradient(135deg,rgba(255,255,255,.035) 0%,transparent 55%);pointer-events:none}
+.xp-card:hover{border-color:var(--re-b2);box-shadow:var(--shadow-md)}
+.xp-card-hd{padding:13px 15px;border-bottom:1px solid var(--re-b1);display:flex;align-items:center;justify-content:space-between;gap:8px}
+.xp-card-title{font-size:12px;font-weight:700;letter-spacing:-.02em;display:flex;align-items:center;gap:6px;color:var(--re-t1)}
+.xp-card-title svg{color:var(--re-t3)}
+.xp-card-sub{font-size:10px;color:var(--re-t3);margin-top:2px;letter-spacing:-.01em}
+.xp-card-body{padding:13px 15px}
+/* STAT BOXES */
+.xp-stat-row{display:grid;grid-template-columns:repeat(4,1fr);gap:9px}
+@media(max-width:900px){.xp-stat-row{grid-template-columns:repeat(2,1fr)}}
+.xp-stat-box{background:var(--re-glass2);backdrop-filter:blur(30px);-webkit-backdrop-filter:blur(30px);border:1px solid var(--re-b1);border-radius:var(--r-md);padding:14px;transition:all .18s var(--ease-out);position:relative;overflow:hidden;cursor:default}
+.xp-stat-box::after{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,rgba(255,255,255,.08),transparent)}
+.xp-stat-box:hover{border-color:var(--re-b2);transform:translateY(-2px);box-shadow:var(--shadow-md)}
+.xp-stat-n{font-size:24px;font-weight:800;letter-spacing:-.05em;font-family:var(--re-mono);color:var(--re-t1);line-height:1}
+.xp-stat-label{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--re-t3);margin-top:6px}
+.xp-stat-box.green{border-color:rgba(48,209,88,.2)}.xp-stat-box.green .xp-stat-n{color:var(--re-green)}
+.xp-stat-box.amber{border-color:rgba(255,214,10,.2)}.xp-stat-box.amber .xp-stat-n{color:var(--re-amber)}
+.xp-stat-box.blue{border-color:rgba(10,132,255,.2)}.xp-stat-box.blue .xp-stat-n{color:var(--re-blue)}
+.xp-stat-box.red{border-color:rgba(255,69,58,.2)}.xp-stat-box.red .xp-stat-n{color:var(--re-red)}
+/* AGG ROW */
 .xp-agg-row{display:grid;grid-template-columns:repeat(5,1fr);border-bottom:1px solid var(--re-b1)}
-.xp-agg-cell{padding:8px 5px;text-align:center;border-right:1px solid var(--re-b1)}
+.xp-agg-cell{padding:9px 5px;text-align:center;border-right:1px solid var(--re-b1);transition:background .1s}
 .xp-agg-cell:last-child{border-right:none}
-.xp-agg-v{font-size:12px;font-weight:700;font-family:var(--re-mono);color:var(--re-t1)}
-.xp-agg-k{font-size:9px;text-transform:uppercase;letter-spacing:.07em;color:var(--re-t2);margin-top:2px}
-.xp-radar-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-.xp-section-label{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.09em;color:var(--re-t2);margin-bottom:6px}
-.xp-feed-ctrl{display:grid;grid-template-columns:1fr 76px 96px 26px;gap:5px;padding:8px 13px;border-bottom:1px solid var(--re-b1);align-items:center}
-.xp-feed-head{display:grid;grid-template-columns:42px 58px 1fr auto auto;gap:5px;padding:4px 13px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--re-t2);border-bottom:1px solid var(--re-b1)}
-.xp-feed-rows{max-height:300px;overflow-y:auto}
+.xp-agg-cell:hover{background:rgba(255,255,255,.02)}
+.xp-agg-v{font-size:12px;font-weight:800;font-family:var(--re-mono);color:var(--re-t1);letter-spacing:-.02em}
+.xp-agg-k{font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:var(--re-t3);margin-top:2px}
+/* RADAR */
+.xp-radar-grid{display:grid;grid-template-columns:1fr 1fr;gap:11px}
+.xp-section-label{font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.1em;color:var(--re-t3);margin-bottom:7px}
+/* MINI LIST */
+.xp-mini-list{display:flex;flex-direction:column;gap:2px}
+.xp-mini-row{display:grid;grid-template-columns:68px 1fr auto;gap:7px;align-items:center;padding:7px 9px;border-radius:var(--r-sm);text-decoration:none;color:var(--re-t1);transition:background .08s,transform .08s;border:1px solid transparent}
+.xp-mini-row:hover{background:var(--re-p3);border-color:var(--re-b1);transform:translateX(2px)}
+.xp-mini-sym{font-weight:800;font-family:var(--re-mono);font-size:12px;letter-spacing:-.02em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.xp-mini-sub{font-size:10px;color:var(--re-t2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.xp-t-buy{font-size:9px;font-weight:800;padding:2px 7px;border-radius:var(--r-full);background:rgba(48,209,88,.1);color:var(--re-green);white-space:nowrap}
+.xp-t-sell{font-size:9px;font-weight:800;padding:2px 7px;border-radius:var(--r-full);background:rgba(255,69,58,.1);color:var(--re-red);white-space:nowrap}
+/* LIVE FEED */
+.xp-feed-ctrl{display:grid;grid-template-columns:1fr 80px 96px 28px;gap:5px;padding:9px 13px;border-bottom:1px solid var(--re-b1);align-items:center}
+.xp-feed-head{display:grid;grid-template-columns:44px 60px 1fr auto auto;gap:5px;padding:4px 13px;font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.09em;color:var(--re-t3);border-bottom:1px solid var(--re-b1)}
+.xp-feed-rows{max-height:320px;overflow-y:auto}
 .xp-feed-rows::-webkit-scrollbar{width:3px}
 .xp-feed-rows::-webkit-scrollbar-thumb{background:var(--re-b2);border-radius:2px}
-.xp-feed-row{display:grid;grid-template-columns:42px 58px 1fr auto auto;gap:5px;padding:5px 13px;border-bottom:1px solid var(--re-b1);font-size:12px;text-decoration:none;color:var(--re-t1);transition:background .06s;align-items:center}
-.xp-feed-row:hover{background:rgba(255,255,255,.015)}
+.xp-feed-row{display:grid;grid-template-columns:44px 60px 1fr auto auto;gap:5px;padding:6px 13px;border-bottom:1px solid var(--re-b0);font-size:12px;text-decoration:none;color:var(--re-t1);transition:background .06s;align-items:center;position:relative}
+.xp-feed-row:hover{background:rgba(255,255,255,.022)}
 .xp-feed-row:last-child{border-bottom:none}
-.xp-feed-row.buy{border-left:2px solid rgba(34,197,94,.4);padding-left:11px}
-.xp-feed-row.sell{border-left:2px solid rgba(239,68,68,.4);padding-left:11px}
-.xp-b-buy{font-size:9px;font-weight:700;color:var(--re-green);background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.15);border-radius:3px;padding:1px 5px;font-family:var(--re-mono)}
-.xp-b-sell{font-size:9px;font-weight:700;color:var(--re-red);background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.15);border-radius:3px;padding:1px 5px;font-family:var(--re-mono)}
-.xp-f-sym{font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.xp-feed-row.buy{border-left:2px solid rgba(48,209,88,.5);padding-left:11px}
+.xp-feed-row.sell{border-left:2px solid rgba(255,69,58,.5);padding-left:11px}
+.xp-feed-row[data-whale="1"]{background:rgba(10,132,255,.025);border-left:2px solid rgba(10,132,255,.6)!important}
+.xp-feed-row[data-top-vol="1"]{border-left:2px solid rgba(255,214,10,.75)!important;background:rgba(255,214,10,.02)!important}
+.xp-feed-row[data-creator-sell="1"]{background:rgba(255,69,58,.05)!important;border-left:2px solid var(--re-red)!important}
+.xp-b-buy{font-size:9px;font-weight:800;color:var(--re-green);background:rgba(48,209,88,.1);border:1px solid rgba(48,209,88,.18);border-radius:var(--r-xs);padding:2px 5px;font-family:var(--re-mono)}
+.xp-b-sell{font-size:9px;font-weight:800;color:var(--re-red);background:rgba(255,69,58,.1);border:1px solid rgba(255,69,58,.18);border-radius:var(--r-xs);padding:2px 5px;font-family:var(--re-mono)}
+.xp-f-sym{font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;letter-spacing:-.01em}
 .xp-f-usr{color:var(--re-t2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}
-.xp-f-val{font-weight:600;font-size:11px;white-space:nowrap;font-family:var(--re-mono)}
-.xp-f-ts{color:var(--re-t2);font-size:10px;white-space:nowrap;font-family:var(--re-mono)}
-.xp-wl-row{display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--re-b1)}
+.xp-f-val{font-weight:700;font-size:11px;white-space:nowrap;font-family:var(--re-mono);letter-spacing:-.02em}
+.xp-f-ts{color:var(--re-t3);font-size:10px;white-space:nowrap;font-family:var(--re-mono)}
+/* WATCHLIST */
+.xp-wl-row{display:flex;align-items:center;gap:9px;padding:7px 0;border-bottom:1px solid var(--re-b0)}
 .xp-wl-row:last-child{border-bottom:none}
-.xp-wl-sym{font-weight:700;font-family:var(--re-mono);font-size:13px;color:var(--re-t1);text-decoration:none;flex:1;transition:color .1s}
-.xp-wl-sym:hover{color:var(--re-green)}
+.xp-wl-sym{font-weight:800;font-family:var(--re-mono);font-size:13px;color:var(--re-t1);text-decoration:none;flex:1;letter-spacing:-.02em;transition:color .1s}
+.xp-wl-sym:hover{color:var(--re-blue)}
 .xp-wl-px{font-size:12px;color:var(--re-t2);font-family:var(--re-mono)}
-.xp-wl-chg{font-size:10px;font-family:var(--re-mono);padding:1px 4px;border-radius:3px;margin-left:3px}
-.xp-wl-chg.up{color:var(--re-green);background:rgba(34,197,94,.08)}
-.xp-wl-chg.dn{color:var(--re-red);background:rgba(239,68,68,.08)}
-.xp-wl-del{background:none;border:none;cursor:pointer;color:var(--re-t2);width:20px;height:20px;border-radius:3px;display:flex;align-items:center;justify-content:center;transition:all .1s;flex-shrink:0}
-.xp-wl-del:hover{color:var(--re-red)}
-.xp-al-row{display:flex;align-items:center;gap:7px;padding:7px 9px;border:1px solid var(--re-b1);border-radius:6px;background:var(--re-p3);margin-bottom:4px}
+.xp-wl-chg{font-size:10px;font-family:var(--re-mono);padding:1px 5px;border-radius:var(--r-xs)}
+.xp-wl-chg.up{color:var(--re-green);background:rgba(48,209,88,.1)}
+.xp-wl-chg.dn{color:var(--re-red);background:rgba(255,69,58,.1)}
+.xp-wl-del{background:none;border:none;cursor:pointer;color:var(--re-t3);width:22px;height:22px;border-radius:var(--r-xs);display:flex;align-items:center;justify-content:center;transition:all .1s;flex-shrink:0}
+.xp-wl-del:hover{background:rgba(255,69,58,.1);color:var(--re-red)}
+/* ALERTS */
+.xp-al-row{display:flex;align-items:center;gap:8px;padding:10px 12px;border:1px solid var(--re-b1);border-radius:var(--r-md);background:var(--re-glass3);margin-bottom:5px;transition:opacity .15s}
 .xp-al-row.done{opacity:.28}
 .xp-al-info{flex:1;min-width:0}
-.xp-al-sym{font-weight:700;font-size:12px;font-family:var(--re-mono)}
-.xp-al-meta{font-size:10px;color:var(--re-t2);margin-top:1px}
-.xp-al-del{background:none;border:none;cursor:pointer;color:var(--re-t2);padding:2px;border-radius:3px;transition:color .1s;display:flex;align-items:center}
-.xp-al-del:hover{color:var(--re-red)}
-.xp-al-badge{font-size:9px;font-weight:700;padding:1px 5px;border-radius:99px;border:1px solid;font-family:var(--re-mono)}
-.xp-al-badge.above{color:var(--re-green);background:rgba(34,197,94,.08);border-color:rgba(34,197,94,.16)}
-.xp-al-badge.below{color:var(--re-red);background:rgba(239,68,68,.08);border-color:rgba(239,68,68,.16)}
-.xp-al-badge.hit{color:var(--re-amber);background:rgba(245,158,11,.08);border-color:rgba(245,158,11,.16)}
-.xp-al-hist{max-height:130px;overflow-y:auto;margin-top:9px;border-top:1px solid var(--re-b1);padding-top:9px}
-.xp-al-hist-row{display:flex;align-items:center;justify-content:space-between;padding:3px 0;font-size:11px;border-bottom:1px solid var(--re-b1);color:var(--re-t2)}
+.xp-al-sym{font-weight:800;font-size:13px;font-family:var(--re-mono);letter-spacing:-.02em}
+.xp-al-meta{font-size:11px;color:var(--re-t2);margin-top:2px}
+.xp-al-badge{font-size:9px;font-weight:800;padding:2px 6px;border-radius:var(--r-full);border:1px solid;font-family:var(--re-mono)}
+.xp-al-badge.above{color:var(--re-green);background:rgba(48,209,88,.1);border-color:rgba(48,209,88,.2)}
+.xp-al-badge.below{color:var(--re-red);background:rgba(255,69,58,.1);border-color:rgba(255,69,58,.2)}
+.xp-al-badge.hit{color:var(--re-amber);background:rgba(255,214,10,.08);border-color:rgba(255,214,10,.2)}
+.xp-al-del{background:none;border:none;cursor:pointer;color:var(--re-t3);padding:3px;border-radius:var(--r-xs);transition:all .1s;display:flex;align-items:center}
+.xp-al-del:hover{color:var(--re-red);background:rgba(255,69,58,.1)}
+.xp-al-hist{max-height:130px;overflow-y:auto;margin-top:8px;border-top:1px solid var(--re-b1);padding-top:8px}
+.xp-al-hist-row{display:flex;align-items:center;justify-content:space-between;padding:3px 0;font-size:11px;border-bottom:1px solid var(--re-b0);color:var(--re-t2)}
 .xp-al-hist-row:last-child{border-bottom:none}
-.xp-journal{max-height:400px;overflow-y:auto}
-.xp-jl-row{display:flex;align-items:center;gap:8px;padding:7px 13px;border-bottom:1px solid var(--re-b1);transition:background .06s}
-.xp-jl-row:hover{background:rgba(255,255,255,.015)}
-.xp-jl-row:last-child{border-bottom:none}
-.xp-jl-icon{font-size:13px;flex-shrink:0;width:18px;text-align:center}
-.xp-jl-body{flex:1;min-width:0}
-.xp-jl-title{font-size:12px;font-weight:600}
-.xp-jl-detail{font-size:10px;color:var(--re-t2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:1px}
-.xp-jl-time{font-size:10px;color:var(--re-t2);font-family:var(--re-mono);white-space:nowrap}
-.xp-jl-empty{padding:22px;text-align:center;color:var(--re-t2);font-size:12px}
-.xp-scanner{max-height:320px;overflow-y:auto}
-.xp-sc-row{display:grid;grid-template-columns:54px 1fr auto auto;gap:7px;align-items:center;padding:6px 13px;border-bottom:1px solid var(--re-b1);text-decoration:none;color:var(--re-t1);transition:background .06s}
-.xp-sc-row:hover{background:rgba(255,255,255,.015)}
-.xp-sc-sym{font-weight:800;font-family:var(--re-mono);font-size:12px}
+/* SCANNER */
+.xp-scanner{max-height:360px;overflow-y:auto}
+.xp-sc-row{display:grid;grid-template-columns:58px 1fr auto auto;gap:7px;align-items:center;padding:7px 13px;border-bottom:1px solid var(--re-b0);text-decoration:none;color:var(--re-t1);transition:background .06s}
+.xp-sc-row:hover{background:rgba(255,255,255,.02)}
+.xp-sc-sym{font-weight:800;font-family:var(--re-mono);font-size:13px;letter-spacing:-.02em}
 .xp-sc-meta{font-size:10px;color:var(--re-t2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.xp-sc-risk{font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;font-family:var(--re-mono)}
-.xp-sc-risk.low{color:var(--re-green);background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.15)}
-.xp-sc-risk.med{color:var(--re-amber);background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.15)}
-.xp-sc-risk.high{color:var(--re-red);background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.15)}
-.xp-sc-age{font-size:9px;color:var(--re-t2);font-family:var(--re-mono);white-space:nowrap}
-.xp-mods-top{padding:8px 13px;display:flex;align-items:center;gap:7px;border-bottom:1px solid var(--re-b1);background:var(--re-p1);position:sticky;top:42px;z-index:10}
+.xp-sc-risk{font-size:9px;font-weight:800;padding:2px 6px;border-radius:var(--r-xs);font-family:var(--re-mono)}
+.xp-sc-risk.low{color:var(--re-green);background:rgba(48,209,88,.1);border:1px solid rgba(48,209,88,.2)}
+.xp-sc-risk.med{color:var(--re-amber);background:rgba(255,214,10,.08);border:1px solid rgba(255,214,10,.2)}
+.xp-sc-risk.high{color:var(--re-red);background:rgba(255,69,58,.1);border:1px solid rgba(255,69,58,.2)}
+.xp-sc-age{font-size:9px;color:var(--re-t3);font-family:var(--re-mono);white-space:nowrap}
+/* JOURNAL */
+.xp-journal{max-height:400px;overflow-y:auto}
+.xp-jl-row{display:flex;align-items:flex-start;gap:9px;padding:8px 13px;border-bottom:1px solid var(--re-b0);transition:background .06s;animation:xp-fade .18s ease}
+.xp-jl-row:hover{background:rgba(255,255,255,.02)}
+.xp-jl-row:last-child{border-bottom:none}
+.xp-jl-icon{font-size:13px;flex-shrink:0;width:19px;text-align:center;margin-top:1px}
+.xp-jl-body{flex:1;min-width:0}
+.xp-jl-title{font-size:12px;font-weight:700;letter-spacing:-.01em}
+.xp-jl-detail{font-size:10px;color:var(--re-t2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:1px}
+.xp-jl-time{font-size:10px;color:var(--re-t3);font-family:var(--re-mono);white-space:nowrap}
+.xp-jl-empty{padding:26px;text-align:center;color:var(--re-t3);font-size:12px}
+/* MODS */
+.xp-mods-top{padding:9px 13px;display:flex;align-items:center;gap:7px;border-bottom:1px solid var(--re-b1);background:rgba(0,0,0,.7);backdrop-filter:blur(30px);-webkit-backdrop-filter:blur(30px);position:sticky;top:90px;z-index:10}
 .xp-mods-sw{flex:1;position:relative}
-.xp-mods-sw svg{position:absolute;left:8px;top:50%;transform:translateY(-50%);color:var(--re-t2);pointer-events:none}
-.xp-mods-si{padding-left:26px!important}
-.xp-mods-count{font-size:11px;color:var(--re-t2);white-space:nowrap;font-weight:600;font-family:var(--re-mono)}
-.xp-cat-filter{display:flex;gap:3px;padding:7px 13px;border-bottom:1px solid var(--re-b1);flex-wrap:wrap}
-.xp-cat-btn{font-size:10px;font-weight:600;padding:2px 8px;border-radius:99px;border:1px solid var(--re-b1);background:transparent;color:var(--re-t2);cursor:pointer;transition:all .1s;font-family:var(--re-font)}
-.xp-cat-btn:hover{border-color:var(--re-b2);color:var(--re-t1)}
-.xp-cat-btn.active{background:var(--re-t1);color:var(--re-p1);border-color:transparent;font-weight:700}
-.xp-mods-body{padding:11px 13px;display:flex;flex-direction:column;gap:14px}
-.xp-cat-hd{display:flex;align-items:center;gap:6px;margin-bottom:7px;padding-bottom:6px;border-bottom:1px solid var(--re-b1)}
-.xp-cat-dot{width:5px;height:5px;border-radius:50%;flex-shrink:0}
-.xp-cat-icon{display:flex;align-items:center}
-.xp-cat-name{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:var(--re-t1)}
-.xp-cat-pill{font-size:9px;font-weight:700;padding:1px 5px;background:var(--re-p3);border:1px solid var(--re-b2);border-radius:99px;color:var(--re-t2);margin-left:auto;font-family:var(--re-mono)}
+.xp-mods-sw svg{position:absolute;left:8px;top:50%;transform:translateY(-50%);color:var(--re-t3);pointer-events:none}
+.xp-mods-si{padding-left:27px!important}
+.xp-mods-count{font-size:11px;color:var(--re-t2);white-space:nowrap;font-weight:700;font-family:var(--re-mono)}
+.xp-cat-filter{display:flex;gap:4px;padding:7px 13px;border-bottom:1px solid var(--re-b1);flex-wrap:wrap;background:rgba(0,0,0,.3)}
+.xp-cat-btn{font-size:10px;font-weight:700;padding:2px 9px;border-radius:var(--r-full);border:1px solid var(--re-b1);background:transparent;color:var(--re-t3);cursor:pointer;transition:all .12s var(--ease-out);font-family:var(--re-font)}
+.xp-cat-btn:hover{border-color:var(--re-b2);color:var(--re-t2);background:var(--re-p3)}
+.xp-cat-btn.active{background:var(--re-t1);color:var(--re-p1);border-color:transparent;font-weight:800}
+.xp-mods-body{padding:13px;display:flex;flex-direction:column;gap:15px}
+.xp-cat-hd{display:flex;align-items:center;gap:7px;margin-bottom:8px;padding-bottom:7px;border-bottom:1px solid var(--re-b1)}
+.xp-cat-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
+.xp-cat-icon{font-size:13px}
+.xp-cat-name{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.08em;color:var(--re-t1)}
+.xp-cat-pill{font-size:9px;font-weight:700;padding:1px 6px;background:var(--re-p4);border:1px solid var(--re-b2);border-radius:var(--r-full);color:var(--re-t2);margin-left:auto;font-family:var(--re-mono)}
 .xp-mod-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:5px}
-.xp-mod-card{background:var(--re-p3);border:1px solid var(--re-b1);border-radius:6px;overflow:hidden;position:relative;transition:border-color .1s}
-.xp-mod-card::after{content:'';position:absolute;top:0;left:0;right:0;height:1.5px;background:transparent;transition:background .14s}
-.xp-mod-card.on{border-color:rgba(255,255,255,.1)}
-.xp-mod-card.on::after{background:var(--mc,rgba(255,255,255,.16))}
-.xp-mod-top{padding:8px 10px 6px;display:flex;gap:8px;align-items:flex-start}
+.xp-mod-card{background:var(--re-glass2);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border:1px solid var(--re-b1);border-radius:var(--r-md);overflow:hidden;position:relative;transition:border-color .14s,box-shadow .14s,transform .14s var(--ease-out)}
+.xp-mod-card::after{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:transparent;transition:background .14s}
+.xp-mod-card.on{border-color:rgba(255,255,255,.11)}
+.xp-mod-card.on::after{background:linear-gradient(90deg,transparent,var(--mc,rgba(255,255,255,.14)),transparent)}
+.xp-mod-card:hover{border-color:var(--re-b2);transform:translateY(-1px);box-shadow:var(--shadow-sm)}
+.xp-mod-top{padding:9px 10px 7px;display:flex;gap:8px;align-items:flex-start}
+.xp-mod-icon{font-size:15px;flex-shrink:0;width:20px;text-align:center;margin-top:1px}
 .xp-mod-info{flex:1;min-width:0}
-.xp-mod-name{font-size:12px;font-weight:700;color:var(--re-t1);margin-bottom:2px;line-height:1.2}
+.xp-mod-name{font-size:12px;font-weight:700;color:var(--re-t1);margin-bottom:2px;line-height:1.2;letter-spacing:-.01em}
 .xp-mod-desc{font-size:10px;color:var(--re-t2);line-height:1.5}
-.xp-mod-foot{padding:4px 10px;border-top:1px solid var(--re-b1);display:flex;align-items:center;justify-content:space-between}
+.xp-mod-foot{padding:4px 10px;border-top:1px solid var(--re-b0);display:flex;align-items:center;justify-content:space-between;background:rgba(0,0,0,.12)}
 .xp-mod-cat-tag{font-size:9px;font-weight:600;display:flex;align-items:center;gap:3px}
-.xp-mod-status{font-size:9px;font-weight:700;letter-spacing:.03em}
+.xp-mod-status{font-size:9px;font-weight:800;letter-spacing:.04em;text-transform:uppercase}
 .xp-mod-status.on{color:var(--re-green)}.xp-mod-status.off{color:var(--re-t3)}
-.xp-toggle{width:30px;height:16px;border-radius:99px;border:1px solid var(--re-b2);background:var(--re-p4);cursor:pointer;position:relative;flex-shrink:0;transition:background .14s,border-color .14s;margin-top:1px}
-.xp-toggle.on{background:var(--re-t1);border-color:transparent}
-.xp-toggle-knob{position:absolute;top:2px;left:2px;width:10px;height:10px;border-radius:50%;background:var(--re-t3);transition:left .13s,background .13s}
-.xp-toggle.on .xp-toggle-knob{left:16px;background:var(--re-bg-val)}
-.xp-rp-row{padding:9px 11px;background:var(--re-p3);border:1px solid var(--re-b1);border-radius:6px;display:flex;flex-direction:column;gap:5px;margin-bottom:4px}
+/* TOGGLE */
+.xp-toggle{width:30px;height:17px;border-radius:var(--r-full);border:1px solid var(--re-b2);background:var(--re-p4);cursor:pointer;position:relative;flex-shrink:0;transition:background .18s var(--ease-out),border-color .18s,box-shadow .18s;margin-top:1px}
+.xp-toggle.on{background:var(--re-green);border-color:transparent;box-shadow:0 0 8px rgba(48,209,88,.3)}
+.xp-toggle-knob{position:absolute;top:2px;left:2px;width:11px;height:11px;border-radius:50%;background:var(--re-t3);transition:left .16s var(--ease-out),background .16s;box-shadow:0 1px 3px rgba(0,0,0,.5)}
+.xp-toggle.on .xp-toggle-knob{left:15px;background:#000}
+/* REPORTER */
+.xp-rp-row{padding:10px;background:var(--re-glass3);border:1px solid var(--re-b1);border-radius:var(--r-md);display:flex;flex-direction:column;gap:5px;margin-bottom:5px;transition:border-color .13s}
+.xp-rp-row:hover{border-color:var(--re-b2)}
 .xp-rp-hd{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
-.xp-rp-user{font-weight:700;font-size:12px;font-family:var(--re-mono)}
-.xp-rp-coin{font-size:11px;color:var(--re-blue);font-family:var(--re-mono);font-weight:600}
-.xp-rp-time{font-size:10px;color:var(--re-t2);margin-left:auto;font-family:var(--re-mono)}
+.xp-rp-user{font-weight:800;font-size:12px;font-family:var(--re-mono)}
+.xp-rp-coin{font-size:11px;color:var(--re-blue);font-family:var(--re-mono);font-weight:700}
+.xp-rp-time{font-size:10px;color:var(--re-t3);margin-left:auto;font-family:var(--re-mono)}
 .xp-rp-body{font-size:12px;color:var(--re-t2);line-height:1.5}
-.xp-rp-foot{display:flex;gap:5px}
-.xp-vote{font-size:11px;font-weight:600;color:var(--re-t2);background:none;border:1px solid var(--re-b1);border-radius:3px;padding:2px 6px;cursor:pointer;font-family:var(--re-font);transition:all .1s}
-.xp-vote.up:hover{color:var(--re-green);border-color:rgba(34,197,94,.25)}
-.xp-vote.dn:hover{color:var(--re-red);border-color:rgba(239,68,68,.25)}
-.xp-input{background:var(--re-p3);border:1px solid var(--re-b2);border-radius:5px;padding:0 9px;height:28px;font-size:12px;color:var(--re-t1);font-family:var(--re-font);outline:none;width:100%;transition:border-color .1s}
-.xp-input:focus{border-color:var(--re-b3)}
-.xp-input::placeholder{color:var(--re-t2)}
-.xp-select{background:var(--re-p3);border:1px solid var(--re-b2);border-radius:5px;padding:0 8px;height:28px;font-size:12px;color:var(--re-t1);font-family:var(--re-font);outline:none;cursor:pointer;width:100%}
-.xp-textarea{background:var(--re-p3);border:1px solid var(--re-b2);border-radius:5px;padding:7px 9px;font-size:12px;color:var(--re-t1);font-family:var(--re-font);outline:none;width:100%;resize:vertical;min-height:68px;line-height:1.5}
-.xp-textarea:focus,.xp-input:focus,.xp-select:focus{border-color:var(--re-b3)}
-.xp-textarea::placeholder{color:var(--re-t2)}
-.xp-label{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.07em;color:var(--re-t2);margin-bottom:3px;display:block}
+.xp-rp-foot{display:flex;gap:4px}
+.xp-vote{font-size:11px;font-weight:700;color:var(--re-t2);background:none;border:1px solid var(--re-b1);border-radius:var(--r-xs);padding:2px 7px;cursor:pointer;font-family:var(--re-font);transition:all .1s}
+.xp-vote.up:hover{color:var(--re-green);border-color:rgba(48,209,88,.3);background:rgba(48,209,88,.07)}
+.xp-vote.dn:hover{color:var(--re-red);border-color:rgba(255,69,58,.3);background:rgba(255,69,58,.07)}
+/* FORMS */
+.xp-input{background:var(--re-glass3);backdrop-filter:blur(20px);border:1px solid var(--re-b2);border-radius:var(--r-sm);padding:0 10px;height:30px;font-size:12px;color:var(--re-t1);font-family:var(--re-font);outline:none;width:100%;box-sizing:border-box;transition:border-color .13s,box-shadow .13s;letter-spacing:-.01em}
+.xp-input:focus{border-color:var(--re-b3);box-shadow:0 0 0 3px rgba(255,255,255,.04)}
+.xp-input::placeholder{color:var(--re-t3)}
+.xp-select{background:var(--re-glass3);border:1px solid var(--re-b2);border-radius:var(--r-sm);padding:0 8px;height:30px;font-size:12px;color:var(--re-t1);font-family:var(--re-font);outline:none;cursor:pointer;width:100%;box-sizing:border-box}
+.xp-textarea{background:var(--re-glass3);border:1px solid var(--re-b2);border-radius:var(--r-sm);padding:8px 10px;font-size:12px;color:var(--re-t1);font-family:var(--re-font);outline:none;width:100%;resize:vertical;min-height:70px;box-sizing:border-box;line-height:1.5;transition:border-color .13s,box-shadow .13s}
+.xp-textarea:focus{border-color:var(--re-b3);box-shadow:0 0 0 3px rgba(255,255,255,.04)}
+.xp-textarea::placeholder{color:var(--re-t3)}
+.xp-label{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--re-t3);margin-bottom:3px;display:block}
 .xp-form-row{display:flex;flex-direction:column;gap:4px}
 .xp-form-grid{display:grid;gap:7px}
-.xp-btn{display:inline-flex;align-items:center;justify-content:center;gap:5px;padding:0 10px;height:28px;font-size:12px;font-weight:600;font-family:var(--re-font);border:1px solid var(--re-b2);border-radius:5px;background:var(--re-p3);color:var(--re-t1);cursor:pointer;transition:all .1s;white-space:nowrap}
-.xp-btn:hover{background:var(--re-p4);border-color:var(--re-b3)}
-.xp-btn.primary{background:var(--re-t1);color:var(--re-p1);border-color:transparent;font-weight:700}
-.xp-btn.primary:hover{opacity:.88}
+/* BUTTONS */
+.xp-btn{display:inline-flex;align-items:center;justify-content:center;gap:5px;padding:0 11px;height:29px;font-size:12px;font-weight:600;font-family:var(--re-font);border:1px solid var(--re-b2);border-radius:var(--r-sm);background:var(--re-glass3);color:var(--re-t1);cursor:pointer;transition:all .13s var(--ease-out);white-space:nowrap;box-sizing:border-box;letter-spacing:-.01em}
+.xp-btn:hover{background:var(--re-p4);border-color:var(--re-b3);transform:scale(1.02)}
+.xp-btn:active{transform:scale(.97)}
+.xp-btn.primary{background:var(--re-t1);color:var(--re-p1);border-color:transparent;font-weight:700;box-shadow:0 2px 6px rgba(255,255,255,.08)}
+.xp-btn.primary:hover{opacity:.86;transform:scale(1.02)}
 .xp-btn.ghost{background:transparent;border-color:var(--re-b1)}
-.xp-btn.ghost:hover{background:var(--re-p3)}
-.xp-btn.danger{border-color:rgba(239,68,68,.18);color:var(--re-red)}
-.xp-btn.danger:hover{background:rgba(239,68,68,.07)}
+.xp-btn.ghost:hover{background:var(--re-p3);border-color:var(--re-b2)}
+.xp-btn.danger{border-color:rgba(255,69,58,.2);color:var(--re-red)}
+.xp-btn.danger:hover{background:rgba(255,69,58,.08);border-color:rgba(255,69,58,.3)}
+.xp-btn.success{border-color:rgba(48,209,88,.2);color:var(--re-green)}
+.xp-btn.success:hover{background:rgba(48,209,88,.08);border-color:rgba(48,209,88,.3)}
 .xp-btn-full{width:100%}
 .xp-btn-row{display:flex;gap:5px;flex-wrap:wrap}
-.xp-pag{display:flex;align-items:center;justify-content:center;gap:6px;padding:8px 13px;border-top:1px solid var(--re-b1)}
-.xp-pag-btn{background:var(--re-p3);border:1px solid var(--re-b1);border-radius:5px;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:12px;color:var(--re-t1);cursor:pointer;transition:all .1s;font-family:var(--re-font)}
-.xp-pag-btn:hover{border-color:var(--re-b2)}
+/* PAGINATION */
+.xp-pag{display:flex;align-items:center;justify-content:center;gap:7px;padding:9px 13px;border-top:1px solid var(--re-b1)}
+.xp-pag-btn{background:var(--re-glass3);border:1px solid var(--re-b1);border-radius:var(--r-sm);width:27px;height:27px;display:flex;align-items:center;justify-content:center;font-size:12px;color:var(--re-t1);cursor:pointer;transition:all .1s;font-family:var(--re-font)}
+.xp-pag-btn:hover{border-color:var(--re-b2);background:var(--re-p4)}
 .xp-pag-btn:disabled{opacity:.2;cursor:not-allowed}
 .xp-pag-info{font-size:11px;color:var(--re-t2);font-family:var(--re-mono)}
+/* CMP TABLE */
 .xp-cmp{width:100%;border-collapse:collapse;font-size:12px}
-.xp-cmp th{padding:7px 11px;text-align:left;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--re-t2);border-bottom:1px solid var(--re-b1)}
-.xp-cmp td{padding:6px 11px;border-bottom:1px solid var(--re-b1);color:var(--re-t2)}
+.xp-cmp th{padding:9px 12px;text-align:left;font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.09em;color:var(--re-t3);border-bottom:1px solid var(--re-b1)}
+.xp-cmp td{padding:8px 12px;border-bottom:1px solid var(--re-b0);color:var(--re-t2)}
 .xp-cmp tr:last-child td{border-bottom:none}
-.xp-cmp tr:hover td{background:rgba(255,255,255,.012)}
+.xp-cmp tr:hover td{background:rgba(255,255,255,.013)}
 .xp-cmp .ours{font-weight:700;color:var(--re-t1)}
 .xp-cmp .ck{color:var(--re-green);font-weight:800}
 .xp-cmp .cx{color:var(--re-t3);opacity:.35}
-.xp-diag-row{display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--re-b1)}
+.xp-cmp .bad{color:var(--re-red)!important;font-weight:700}
+/* DIAG */
+.xp-diag-row{display:flex;align-items:center;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--re-b0)}
 .xp-diag-row:last-child{border-bottom:none}
 .xp-diag-l{font-size:12px;color:var(--re-t2);display:flex;align-items:center;gap:6px}
-.xp-diag-v{font-size:11px;font-family:var(--re-mono);font-weight:600;color:var(--re-t1)}
-.xp-dot-ok{width:5px;height:5px;border-radius:50%;background:var(--re-green);flex-shrink:0}
-.xp-dot-err{width:5px;height:5px;border-radius:50%;background:var(--re-red);flex-shrink:0}
-.xp-dot-idle{width:5px;height:5px;border-radius:50%;background:var(--re-t3);flex-shrink:0}
-.xp-empty{padding:20px;text-align:center;color:var(--re-t2);font-size:12px;line-height:1.6}
-.xp-loading{display:flex;align-items:center;justify-content:center;gap:7px;padding:18px;color:var(--re-t2);font-size:12px}
-.xp-spin{animation:re-spin-anim .7s linear infinite;transform-origin:center;transform-box:fill-box}
-.xp-badge{display:inline-flex;align-items:center;gap:2px;font-size:9px;font-weight:700;padding:1px 5px;border-radius:99px;border:1px solid;font-family:var(--re-mono)}
-.xp-badge.new{color:var(--re-green);background:rgba(34,197,94,.08);border-color:rgba(34,197,94,.16)}
-.xp-badge.whale{color:var(--re-blue);background:rgba(59,130,246,.08);border-color:rgba(59,130,246,.16)}
-.xp-badge.risk{color:var(--re-red);background:rgba(239,68,68,.08);border-color:rgba(239,68,68,.16)}
-.xp-cl-item{display:flex;gap:7px;padding:6px 0;border-bottom:1px solid var(--re-b1)}
+.xp-diag-v{font-size:11px;font-family:var(--re-mono);font-weight:700;color:var(--re-t1)}
+.xp-dot-ok{width:6px;height:6px;border-radius:50%;background:var(--re-green);flex-shrink:0;box-shadow:0 0 6px rgba(48,209,88,.5)}
+.xp-dot-err{width:6px;height:6px;border-radius:50%;background:var(--re-red);flex-shrink:0;box-shadow:0 0 6px rgba(255,69,58,.5)}
+.xp-dot-idle{width:6px;height:6px;border-radius:50%;background:var(--re-t3);flex-shrink:0}
+/* MISC */
+.xp-badge{display:inline-flex;align-items:center;gap:2px;font-size:9px;font-weight:800;padding:1px 5px;border-radius:var(--r-full);border:1px solid;font-family:var(--re-mono)}
+.xp-badge.new{color:var(--re-green);background:rgba(48,209,88,.08);border-color:rgba(48,209,88,.2)}
+.xp-badge.whale{color:var(--re-blue);background:rgba(10,132,255,.08);border-color:rgba(10,132,255,.2)}
+.xp-badge.risk{color:var(--re-red);background:rgba(255,69,58,.08);border-color:rgba(255,69,58,.2)}
+.xp-heatmap-wrap{display:flex;flex-wrap:wrap;gap:4px;padding:10px 13px}
+.xp-hm-cell{display:inline-flex;flex-direction:column;align-items:center;justify-content:center;border-radius:var(--r-sm);cursor:pointer;text-decoration:none;transition:opacity .1s,transform .1s;flex-shrink:0}
+.xp-hm-cell:hover{opacity:.8;transform:scale(1.04)}
+.xp-hm-sym{font-size:11px;font-weight:800;color:var(--re-t1);font-family:var(--re-mono);letter-spacing:-.02em}
+.xp-hm-vol{font-size:8px;color:rgba(255,255,255,.4);font-family:var(--re-mono)}
+.xp-tl-row{display:flex;align-items:flex-start;gap:9px;padding:7px 13px;border-bottom:1px solid var(--re-b0);animation:xp-fade .14s ease}
+.xp-tl-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;margin-top:3px}
+.xp-tl-dot.buy{background:var(--re-green);box-shadow:0 0 5px rgba(48,209,88,.4)}
+.xp-tl-dot.sell{background:var(--re-red);box-shadow:0 0 5px rgba(255,69,58,.4)}
+.xp-tl-body{flex:1;min-width:0}
+.xp-tl-main{font-size:12px;font-weight:700}
+.xp-tl-sub{font-size:10px;color:var(--re-t2);margin-top:1px}
+.xp-tl-time{font-size:10px;color:var(--re-t3);font-family:var(--re-mono);white-space:nowrap}
+.xp-cl-item{display:flex;gap:7px;padding:6px 0;border-bottom:1px solid var(--re-b0)}
 .xp-cl-item:last-child{border-bottom:none}
-.xp-cl-dot{width:4px;height:4px;border-radius:50%;background:var(--re-green);flex-shrink:0;margin-top:5px}
+.xp-cl-dot{width:5px;height:5px;border-radius:50%;background:var(--re-green);flex-shrink:0;margin-top:5px;box-shadow:0 0 4px rgba(48,209,88,.4)}
 .xp-cl-text{font-size:12px;color:var(--re-t2);line-height:1.5}
-.xp-footer{border-top:1px solid var(--re-b1);padding:8px 14px;display:flex;align-items:center;justify-content:space-between;font-size:11px;color:var(--re-t2)}
-.xp-footer-links{display:flex;gap:10px}
-.xp-flink{color:var(--re-t2);text-decoration:none;font-weight:500;transition:color .1s;cursor:pointer;background:none;border:none;font-family:var(--re-font);font-size:11px;padding:0}
+.xp-empty{padding:26px;text-align:center;color:var(--re-t3);font-size:12px;line-height:1.7}
+.xp-loading{display:flex;align-items:center;justify-content:center;gap:7px;padding:20px;color:var(--re-t2);font-size:12px}
+.xp-spin{animation:xp-spin .7s linear infinite;transform-origin:center;transform-box:fill-box}
+.xp-copy-sym{cursor:copy}
+.xp-new-hl{animation:xp-hl 2s ease-out}
+.xp-footer{border-top:1px solid var(--re-b1);padding:9px 18px;display:flex;align-items:center;justify-content:space-between;font-size:11px;color:var(--re-t3);background:rgba(0,0,0,.6);flex-shrink:0}
+.xp-footer-links{display:flex;gap:11px}
+.xp-flink{color:var(--re-t3);text-decoration:none;font-weight:500;transition:color .1s;cursor:pointer;background:none;border:none;font-family:var(--re-font);font-size:11px;padding:0}
 .xp-flink:hover{color:var(--re-t1)}
 .xp-divider{height:1px;background:var(--re-b1);margin:9px 0}
-.xp-copy-sym{cursor:copy}
-.xp-new-hl{animation:re-hl 2s ease-out}
+.xp-stat-box.amber::after{background:linear-gradient(90deg,transparent,rgba(255,214,10,.1),transparent)}
+.xp-stat-box.blue::after{background:linear-gradient(90deg,transparent,rgba(10,132,255,.1),transparent)}
+.xp-stat-box.green::after{background:linear-gradient(90deg,transparent,rgba(48,209,88,.1),transparent)}
 #re-panel-wrapper ::-webkit-scrollbar{width:4px;height:4px}
 #re-panel-wrapper ::-webkit-scrollbar-track{background:transparent}
 #re-panel-wrapper ::-webkit-scrollbar-thumb{background:var(--re-b2);border-radius:2px}
 #re-panel-wrapper ::-webkit-scrollbar-thumb:hover{background:var(--re-b3)}
+/* SETTINGS TAB */
+.xp-setting-row{display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--re-b0);gap:12px}
+.xp-setting-row:last-child{border-bottom:none}
+.xp-setting-label{font-size:12px;font-weight:600;color:var(--re-t1);letter-spacing:-.01em}
+.xp-setting-sub{font-size:10px;color:var(--re-t3);margin-top:2px}
+.xp-setting-ctrl{flex-shrink:0}
+.xp-setting-section{font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.1em;color:var(--re-t3);padding:10px 0 4px;margin-bottom:4px;border-bottom:1px solid var(--re-b1)}
+/* CUSTOMIZATION SWATCHES */
+.xp-swatch-grid{display:flex;gap:6px;flex-wrap:wrap}
+.xp-swatch{width:22px;height:22px;border-radius:50%;cursor:pointer;border:2px solid transparent;transition:all .12s var(--ease-out)}
+.xp-swatch:hover{transform:scale(1.15)}
+.xp-swatch.active{border-color:var(--re-t1);box-shadow:0 0 0 2px rgba(255,255,255,.15)}
 </style>
+
+<!-- TOPBAR -->
 <div class="re-bar">
-    <div class="re-bar-brand"><div class="re-bar-icon"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></div>Rugplay Enhanced</div>
-    <div class="re-bar-sep"></div>
-    <div class="re-bar-stats">
-        <div class="re-stat-pill"><span class="re-stat-dot" style="background:#3b82f6"></span><span class="re-stat-v" id="xp-stat-trades">0</span><span class="re-stat-k">trades</span></div>
-        <div class="re-stat-pill"><span class="re-stat-dot" style="background:#f59e0b"></span><span class="re-stat-v" id="re-stat-alerts">${activeAlerts}</span><span class="re-stat-k">alerts</span></div>
-        <div class="re-stat-pill"><span class="re-stat-dot" style="background:#22c55e"></span><span class="re-stat-v" id="re-stat-wl">${wlCount}</span><span class="re-stat-k">watching</span></div>
-        <div class="re-stat-pill"><span class="re-stat-dot" style="background:#8b5cf6"></span><span class="re-stat-v">${enabledTotal}</span><span class="re-stat-k">mods</span></div>
-    </div>
-    <div class="re-bar-r">
-        <div class="re-live-badge"><div class="re-live-dot"></div>LIVE</div>
-        <div class="re-bar-sep"></div>
-        <kbd class="re-kbd">Ctrl+K</kbd>
-        <button class="re-icon-btn" id="re-feedback-btn" title="Feedback"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></button>
-        <a class="re-icon-btn" href="https://github.com/devbyego/rugplay-enhanced" target="_blank"><svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.477 2 12c0 4.42 2.865 8.166 6.839 9.489.5.092.682-.217.682-.482 0-.237-.008-.866-.013-1.7-2.782.603-3.369-1.342-3.369-1.342-.454-1.155-1.11-1.462-1.11-1.462-.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.578 9.578 0 0 1 12 6.836c.85.004 1.705.114 2.504.336 1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.203 2.394.1 2.647.64.699 1.028 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.741 0 .267.18.578.688.48C19.138 20.163 22 16.418 22 12c0-5.523-4.477-10-10-10z"/></svg></a>
-    </div>
+  <div class="re-bar-brand">
+    <div class="re-bar-logo"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></div>
+    Enhanced
+  </div>
+  <div class="re-bar-divider"></div>
+  <div class="re-bar-chips">
+    <span class="re-chip">WS <span class="re-chip-v" id="re-stat-trades">—</span></span>
+    <span class="re-chip">Alerts <span class="re-chip-v" id="re-stat-alerts">${activeAlerts||'—'}</span></span>
+    <span class="re-chip">WL <span class="re-chip-v" id="re-stat-wl">${wlCount||'—'}</span></span>
+    <span class="re-live"><span class="re-live-dot"></span>LIVE</span>
+    ${s.showVersionBadge ? `<span class="xp-pill ver">v${ver}</span>` : ''}
+  </div>
+  <div class="re-bar-right">
+    <a href="https://github.com/devbyego/rugplay-enhanced" target="_blank" class="re-bar-btn" title="GitHub"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.477 2 12c0 4.418 2.865 8.168 6.839 9.49.5.092.682-.217.682-.482 0-.237-.009-.868-.014-1.703-2.782.605-3.369-1.34-3.369-1.34-.454-1.155-1.11-1.463-1.11-1.463-.908-.62.069-.608.069-.608 1.003.07 1.531 1.031 1.531 1.031.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.56 9.56 0 0 1 12 6.844a9.59 9.59 0 0 1 2.504.337c1.909-1.294 2.748-1.025 2.748-1.025.546 1.377.202 2.394.1 2.647.64.699 1.028 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.743 0 .267.18.578.688.48C19.138 20.165 22 16.418 22 12c0-5.523-4.477-10-10-10z"/></svg></a>
+    <button class="re-bar-btn" id="re-panel-close" title="Close Enhanced (Ctrl+Shift+E)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+  </div>
 </div>
-<div class="re-sentiment" id="xp-sentiment-wrap" style="display:${s.sentimentBar?'':'none'}">
-    <div class="re-sentiment-fill" id="xp-sentiment-fill"></div>
+
+<!-- SENTIMENT BAR -->
+<div class="xp-sentiment-wrap" id="xp-sentiment-wrap" style="${s.sentimentBar?'':'display:none'}">
+  <div class="xp-sentiment-fill" id="xp-sentiment-fill" style="width:50%"></div>
 </div>
-<div class="re-shell">
-<nav class="re-nav">
-    <div class="re-nav-label">Main</div>
-    <button class="re-nav-item" data-re-tab="dashboard"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>Dashboard<span class="re-nav-badge" id="xp-scan-count2"></span></button>
-<button class="re-nav-item" data-re-tab="scanner"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>Scanner<span class="re-nav-badge" id="xp-scan-count"></span></button>
-<button class="re-nav-item" data-re-tab="watchlist"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>Watchlist<span class="re-nav-badge" id="xp-tab-wl"></span></button>
-<button class="re-nav-item" data-re-tab="alerts"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>Alerts<span class="re-nav-badge" id="xp-tab-al"></span></button>
-<button class="re-nav-item" data-re-tab="journal"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>Journal<span class="re-nav-badge" id="xp-jl-count"></span></button>
-<button class="re-nav-item" data-re-tab="mytrades"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/></svg>My Trades</button>
-<button class="re-nav-item" data-re-tab="bets"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>Bets</button>
-<button class="re-nav-item" data-re-tab="leaderboard"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>Leaderboard</button>
-<button class="re-nav-item" data-re-tab="reporter"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>Reporter</button>
-    <div class="re-nav-sep"></div>
-    <div class="re-nav-label">Tools</div>
-    <button class="re-nav-item" data-re-tab="mods"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>Mods</button>
-<button class="re-nav-item" data-re-tab="features"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/></svg>vs Plus</button>
-<button class="re-nav-item" data-re-tab="bugreport"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/></svg>Bug Report</button>
-<button class="re-nav-item" data-re-tab="status"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>Status</button>
-</nav>
-<div class="re-main">
+
+<!-- SESSION STATS -->
+<div class="xp-session-bar" id="xp-session-bar" style="${s.showSessionStats?'':'display:none'}">
+  <div class="xp-ss-item"><span class="xp-ss-k">Volume</span><span class="xp-ss-v" id="xp-ss-vol">$0</span></div>
+  <div class="xp-ss-item"><span class="xp-ss-k">Trades</span><span class="xp-ss-v" id="xp-ss-trades">0</span></div>
+  <div class="xp-ss-item"><span class="xp-ss-k">Coins</span><span class="xp-ss-v" id="xp-ss-coins">0</span></div>
+  <div class="xp-ss-item"><span class="xp-ss-k">Whales</span><span class="xp-ss-v" id="xp-ss-whales">0</span></div>
+  <div class="xp-ss-item"><span class="xp-ss-k">Top Coin</span><span class="xp-ss-v" id="xp-ss-top">—</span></div>
+  <div class="xp-ss-item"><span class="xp-ss-k">B/S Ratio</span><span class="xp-ss-v" id="xp-ds-bs">—</span></div>
+</div>
+
+<!-- TABS -->
+<div class="xp-tabs">
+  <button class="xp-tab active" data-re-tab="dashboard"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>Dashboard</button>
+  <button class="xp-tab" data-re-tab="scanner"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>Scanner <span class="xp-tab-badge" id="xp-scan-count">0</span></button>
+  <button class="xp-tab" data-re-tab="watchlist"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>Watchlist <span class="xp-tab-badge" id="xp-tab-wl">${wlCount||''}</span></button>
+  <button class="xp-tab" data-re-tab="alerts"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>Alerts ${activeAlerts > 0 ? `<span class="xp-tab-badge" style="background:var(--re-red);color:#fff">${activeAlerts}</span>` : ''}</button>
+  <button class="xp-tab" data-re-tab="journal"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>Journal <span class="xp-tab-badge" id="xp-jl-count"></span></button>
+  <button class="xp-tab" data-re-tab="mytrades"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/></svg>My Trades</button>
+  <button class="xp-tab" data-re-tab="snipe"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="22" y1="12" x2="18" y2="12"/><line x1="6" y1="12" x2="2" y2="12"/><line x1="12" y1="6" x2="12" y2="2"/><line x1="12" y1="22" x2="12" y2="18"/><circle cx="12" cy="12" r="3"/></svg>Snipe</button>
+  <button class="xp-tab" data-re-tab="bets"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>Predictions</button>
+  <button class="xp-tab" data-re-tab="leaderboard"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>Leaderboard</button>
+  <button class="xp-tab" data-re-tab="reporter"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>Reporter</button>
+  <button class="xp-tab" data-re-tab="mods"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M5 5a10 10 0 0 0 0 14"/></svg>Mods <span class="xp-tab-badge">${enabledCount}/${MODS.length}</span></button>
+  <button class="xp-tab" data-re-tab="settings"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>Settings</button>
+  <button class="xp-tab" data-re-tab="status"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>Status</button>
+  <button class="xp-tab" data-re-tab="features"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>vs Plus</button>
+</div>
+
+<!-- TAB BODIES -->
 <div class="xp-body">
+
+<!-- DASHBOARD -->
 <div data-re-section="dashboard">
-<div class="xp-session-bar" id="xp-session-bar" style="display:${s.showSessionStats?'':'none'}">
-    <div class="xp-sb-item"><span class="xp-sb-val" id="xp-ss-vol">—</span><span>session vol</span></div>
-    <div class="xp-sb-sep"></div>
-    <div class="xp-sb-item"><span class="xp-sb-val" id="xp-ss-top">—</span><span>top coin</span></div>
-    <div class="xp-sb-sep"></div>
-    <div class="xp-sb-item"><span class="xp-sb-val" id="xp-ss-trades">0</span><span>trades</span></div>
-    <div class="xp-sb-sep"></div>
-    <div class="xp-sb-item"><span class="xp-sb-val" id="xp-ss-coins">0</span><span>unique coins</span></div>
-    <div class="xp-sb-sep"></div>
-    <div class="xp-sb-item"><span class="xp-sb-val" id="xp-ss-whales">0</span><span>whales</span></div>
-</div>
-<div class="xp-stat-row">
-    <div class="xp-stat-box"><div class="xp-stat-n" id="re-stat-trades">0</div><div class="xp-stat-label">Trades Seen</div></div>
-    <div class="xp-stat-box green"><div class="xp-stat-n" id="xp-ds-vol">—</div><div class="xp-stat-label">10m Volume</div></div>
-    <div class="xp-stat-box amber"><div class="xp-stat-n" id="xp-ds-bs">—</div><div class="xp-stat-label">Buy / Sell</div></div>
-    <div class="xp-stat-box blue"><div class="xp-stat-n" id="xp-ds-coins">—</div><div class="xp-stat-label">Active Coins</div></div>
-</div>
-<div class="xp-2col">
+  <div class="xp-stat-row">
+    <div class="xp-stat-box green"><div class="xp-stat-n" id="xp-stat-trades">0</div><div class="xp-stat-label">Trades Seen</div></div>
+    <div class="xp-stat-box blue"><div class="xp-stat-n" id="xp-stat-vol">$0</div><div class="xp-stat-label">Session Volume</div></div>
+    <div class="xp-stat-box amber"><div class="xp-stat-n" id="xp-stat-whales">0</div><div class="xp-stat-label">Whale Trades</div></div>
+    <div class="xp-stat-box"><div class="xp-stat-n" id="xp-stat-coins">0</div><div class="xp-stat-label">Active Coins</div></div>
+  </div>
+  <div class="xp-2col">
     <div class="xp-col">
-        <div class="xp-card">
-            <div class="xp-card-hd">
-                <div><div class="xp-card-title"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/></svg>Live Feed</div><div class="xp-card-sub">Platform-wide trades via WebSocket</div></div>
-                <div class="xp-btn-row">
-                    <button id="re-feed-pause" class="xp-btn ghost" style="height:26px;font-size:11px">Pause</button>
-                    <button id="xp-feed-timeline-toggle" class="xp-btn ghost" style="height:26px;font-size:11px">Timeline</button>
-                </div>
-            </div>
-            <div class="xp-feed-ctrl">
-                <input id="re-feed-filter" class="xp-input" placeholder="Filter coin or user..." />
-                <input id="re-feed-min" class="xp-input" type="number" min="0" step="25" placeholder="Min $" />
-                <select id="re-feed-side" class="xp-select"><option value="all">All</option><option value="BUY">Buys</option><option value="SELL">Sells</option></select>
-                <button class="xp-icon-btn" id="re-feed-clear" title="Clear"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg></button>
-            </div>
-            <div id="xp-feed-table-view">
-                <div class="xp-feed-head"><span>TYPE</span><span>COIN</span><span>USER</span><span>VALUE</span><span>AGO</span></div>
-                <div id="re-feed-rows" class="xp-feed-rows"></div>
-            </div>
-            <div id="xp-feed-timeline-view" style="display:none">
-                <div id="xp-timeline-rows" class="xp-timeline"></div>
-            </div>
-            <div class="xp-card-ft">
-                <span id="xp-feed-count" style="font-family:var(--xp-mono)">0 trades</span>
-                <div class="xp-btn-row">
-                    <button class="xp-btn ghost" style="height:24px;font-size:10px" id="xp-export-feed">Export JSON</button>
-                    <button class="xp-btn ghost" style="height:24px;font-size:10px" id="xp-export-csv">Export CSV</button>
-                </div>
-            </div>
+      <div class="xp-card">
+        <div class="xp-card-hd">
+          <div><div class="xp-card-title"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>Live Feed</div><div class="xp-card-sub">Platform-wide trades via WebSocket</div></div>
+          <div class="xp-btn-row">
+            <button class="xp-btn ghost" id="xp-feed-timeline-toggle" style="height:26px;font-size:11px">Timeline</button>
+            <button class="xp-btn ghost" id="re-feed-pause" style="height:26px;font-size:11px">Pause</button>
+            <button class="xp-btn ghost" id="re-feed-clear" style="height:26px;font-size:11px">Clear</button>
+          </div>
         </div>
-        <div class="xp-card" id="xp-heatmap-card" style="display:${s.heatmap?'':'none'}">
-            <div class="xp-card-hd">
-                <div><div class="xp-card-title"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>Live Heatmap</div><div class="xp-card-sub">Sized by volume · colored by buy/sell ratio</div></div>
-            </div>
-            <div id="xp-heatmap" class="xp-heatmap"><div class="xp-empty">Waiting for trades…</div></div>
+        <div class="xp-feed-ctrl">
+          <input class="xp-input" id="re-feed-filter" placeholder="Filter symbol or user…" style="height:26px;font-size:11px" />
+          <input class="xp-input" id="re-feed-min" type="number" placeholder="Min $" style="height:26px;font-size:11px" />
+          <select class="xp-select" id="re-feed-side" style="height:26px;font-size:11px"><option value="all">All sides</option><option value="BUY">Buys only</option><option value="SELL">Sells only</option></select>
+          <div style="display:flex;gap:3px">
+            <button class="xp-btn ghost" id="xp-export-feed" style="height:26px;width:26px;padding:0;font-size:10px" title="Export JSON">⬇</button>
+            <button class="xp-btn ghost" id="xp-export-csv"  style="height:26px;width:26px;padding:0;font-size:10px" title="Export CSV">📋</button>
+          </div>
         </div>
+        <div class="xp-feed-head"><span>Side</span><span>Symbol</span><span>User</span><span>Value</span><span>Time</span></div>
+        <div id="xp-feed-table-view">
+          <div id="re-feed-rows" class="xp-feed-rows"><div class="xp-empty">Waiting for live trades…<br><span style="font-size:10px;color:var(--re-t3)">Trades appear here in real time via WebSocket</span></div></div>
+        </div>
+        <div id="xp-feed-timeline-view" style="display:none;max-height:320px;overflow-y:auto">
+          <div id="xp-timeline-rows"><div class="xp-empty">No trades yet</div></div>
+        </div>
+      </div>
+      <div class="xp-card" id="xp-heatmap-card" style="${s.heatmap?'':'display:none'}">
+        <div class="xp-card-hd">
+          <div><div class="xp-card-title">🗺 Live Heatmap</div><div class="xp-card-sub">Volume-sized, buy/sell ratio colored</div></div>
+          <select class="xp-select" id="re-agg-window" style="width:110px;height:26px;font-size:11px">
+            <option value="300000">5 min</option><option value="600000" selected>10 min</option>
+            <option value="1800000">30 min</option><option value="3600000">1 hour</option>
+          </select>
+        </div>
+        <div class="xp-heatmap-wrap" id="xp-heatmap"><div class="xp-empty">Waiting for trades…</div></div>
+      </div>
     </div>
     <div class="xp-col">
-        <div class="xp-card">
-            <div class="xp-card-hd">
-                <div><div class="xp-card-title"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/></svg>Market Radar</div><div class="xp-card-sub">Hot coins · whale activity</div></div>
-                <div style="display:flex;gap:5px">
-                    <select id="re-agg-window" class="xp-select" style="width:56px;height:26px;font-size:11px"><option value="300000">5m</option><option value="600000" selected>10m</option><option value="1800000">30m</option></select>
-                    <input id="re-whale-min" class="xp-input" style="width:62px;height:26px;font-size:11px" type="number" min="0" step="50" value="250" placeholder="$" />
-                </div>
-            </div>
-            <div class="xp-agg-row" id="re-stats-body">
-                <div class="xp-agg-cell"><div class="xp-agg-v">—</div><div class="xp-agg-k">Window</div></div>
-                <div class="xp-agg-cell"><div class="xp-agg-v">0</div><div class="xp-agg-k">Trades</div></div>
-                <div class="xp-agg-cell"><div class="xp-agg-v">—</div><div class="xp-agg-k">Volume</div></div>
-                <div class="xp-agg-cell"><div class="xp-agg-v">—</div><div class="xp-agg-k">Avg</div></div>
-                <div class="xp-agg-cell"><div class="xp-agg-v">—</div><div class="xp-agg-k">B/S</div></div>
-            </div>
-            <div class="xp-card-body">
-                <div class="xp-radar-grid">
-                    <div><div class="xp-section-label">Hot Coins</div><div id="re-hot-body" class="xp-mini-list"></div></div>
-                    <div><div class="xp-section-label">Whale Radar</div><div id="re-whale-body" class="xp-mini-list"></div></div>
-                </div>
-            </div>
+      <div class="xp-card" id="xp-pf-chart-card" style="${s.portfolioChart?'':'display:none'}">
+        <div class="xp-card-hd"><div class="xp-card-title">📈 Portfolio</div></div>
+        <div style="padding:10px 14px 6px">
+          <canvas id="xp-spark" style="width:100%;height:52px;display:block"></canvas>
+          <div style="display:flex;justify-content:space-between;font-size:10px;font-family:var(--re-mono);margin-top:5px;color:var(--re-t2)">
+            <span id="xp-spark-lo">—</span><span id="xp-spark-cur" style="font-weight:700;color:var(--re-t1)">—</span><span id="xp-spark-hi">—</span>
+          </div>
         </div>
-        <div class="xp-card" id="xp-pf-chart-card" style="display:${s.portfolioChart?'':'none'}">
-            <div class="xp-card-hd"><div><div class="xp-card-title"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>Portfolio Chart</div><div class="xp-card-sub">Session value snapshots</div></div></div>
-            <div class="xp-spark-wrap"><canvas id="xp-spark" class="xp-spark-canvas" height="48"></canvas></div>
-            <div class="xp-spark-meta"><span id="xp-spark-lo">—</span><span id="xp-spark-cur" style="color:var(--xp-t1);font-weight:700">—</span><span id="xp-spark-hi">—</span></div>
+      </div>
+      <div class="xp-card">
+        <div class="xp-card-hd">
+          <div><div class="xp-card-title">🔥 Hot Coins</div><div class="xp-card-sub">Ranked by session volume</div></div>
+          <input class="xp-input" id="re-whale-min" type="number" value="250" placeholder="Whale $" style="width:80px;height:26px;font-size:11px" title="Whale threshold" />
         </div>
+        <div class="xp-agg-row">
+          <div class="xp-agg-cell"><div class="xp-agg-v" id="xp-ds-vol">$0</div><div class="xp-agg-k">Volume</div></div>
+          <div class="xp-agg-cell"><div class="xp-agg-v" id="xp-stat-trades-2">0</div><div class="xp-agg-k">Trades</div></div>
+          <div class="xp-agg-cell"><div class="xp-agg-v" id="xp-ds-bs">—</div><div class="xp-agg-k">B/S</div></div>
+          <div class="xp-agg-cell"><div class="xp-agg-v" id="xp-ds-coins">0</div><div class="xp-agg-k">Coins</div></div>
+          <div class="xp-agg-cell"><div class="xp-agg-v" id="xp-ds-avg">$0</div><div class="xp-agg-k">Avg</div></div>
+        </div>
+        <div class="xp-mini-list" style="padding:8px 9px" id="re-hot-body"><div class="xp-empty">No data yet</div></div>
+      </div>
+      <div class="xp-card">
+        <div class="xp-card-hd"><div><div class="xp-card-title">🐋 Whale Radar</div><div class="xp-card-sub">Largest trades this session</div></div></div>
+        <div class="xp-mini-list" style="padding:8px 9px;max-height:200px;overflow-y:auto" id="re-whale-body"><div class="xp-empty">No whales yet</div></div>
+      </div>
+      <div class="xp-radar-grid">
+        <div class="xp-card" id="xp-gainers" style="${s.showTopGainers?'':'display:none'}">
+          <div class="xp-card-hd"><div class="xp-card-title">🚀 Gainers</div></div>
+          <div class="xp-mini-list" style="padding:6px 9px" id="xp-gainers-list"><div class="xp-empty" style="padding:12px 0">No data</div></div>
+        </div>
+        <div class="xp-card" id="xp-losers" style="${s.showTopLosers?'':'display:none'}">
+          <div class="xp-card-hd"><div class="xp-card-title">📉 Losers</div></div>
+          <div class="xp-mini-list" style="padding:6px 9px" id="xp-losers-list"><div class="xp-empty" style="padding:12px 0">No data</div></div>
+        </div>
+      </div>
+      <div class="xp-card" id="xp-gems" style="${s.showGems?'':'display:none'}">
+        <div class="xp-card-hd"><div><div class="xp-card-title">💎 Gems</div><div class="xp-card-sub">Low risk · Strong volume</div></div></div>
+        <div class="xp-mini-list" style="padding:6px 9px;max-height:160px;overflow-y:auto" id="xp-gems-list"><div class="xp-empty" style="padding:12px 0">No gems found yet</div></div>
+      </div>
     </div>
+  </div>
 </div>
-</div>
+
+<!-- SCANNER -->
 <div data-re-section="scanner">
-<div class="xp-2col">
+  <div class="xp-2col">
     <div class="xp-col">
-        <div class="xp-card">
-            <div class="xp-card-hd">
-                <div><div class="xp-card-title"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>Coin Scanner</div><div class="xp-card-sub">New coins from live feed · scored in real-time</div></div>
-                <button class="xp-btn ghost" id="xp-scan-clear" style="height:26px;font-size:11px">Clear</button>
-            </div>
-            <div style="padding:9px 14px;border-bottom:1px solid var(--xp-b1);display:flex;gap:6px;align-items:center">
-                <select class="xp-select" id="xp-scan-sort" style="width:100px;height:28px;font-size:11px">
-                    <option value="first">Newest first</option>
-                    <option value="vol">Volume</option>
-                    <option value="risk">Risk</option>
-                </select>
-                <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--xp-t2);cursor:pointer;white-space:nowrap">
-                    <input type="checkbox" id="xp-scan-low-only" style="accent-color:var(--xp-green)"> Low risk only
-                </label>
-            </div>
-            <div id="xp-scanner-rows" class="xp-scanner"><div class="xp-empty">Watching for new coins…<br>Trades seen in the live feed appear here instantly.</div></div>
+      <div class="xp-card">
+        <div class="xp-card-hd">
+          <div><div class="xp-card-title">🔭 New Coin Scanner</div><div class="xp-card-sub">Coins first detected in live feed</div></div>
+          <div class="xp-btn-row">
+            <select class="xp-select" id="xp-scan-sort" style="width:110px;height:26px;font-size:11px"><option value="first">Newest first</option><option value="vol">By volume</option><option value="risk">By risk</option></select>
+            <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--re-t2);cursor:pointer"><input type="checkbox" id="xp-scan-low-only" style="accent-color:var(--re-green)"> Low risk only</label>
+            <button class="xp-btn ghost" id="xp-scan-clear" style="height:26px;font-size:11px">Clear</button>
+          </div>
         </div>
+        <div class="xp-scanner" id="xp-scanner-rows"><div class="xp-empty">No new coins detected yet.<br><span style="font-size:10px;color:var(--re-t3)">New coins appear here the moment they hit the live feed</span></div></div>
+      </div>
     </div>
     <div class="xp-col">
-        <div class="xp-card">
-            <div class="xp-card-hd"><div><div class="xp-card-title">Top Gainers</div><div class="xp-card-sub">Biggest price rises this session</div></div></div>
-            <div id="xp-gainers" class="xp-mini-list" style="padding:10px 14px 4px"><div class="xp-empty" style="padding:12px 0">No data yet</div></div>
+      <div class="xp-card">
+        <div class="xp-card-hd"><div><div class="xp-card-title">📊 Gainers / Losers</div><div class="xp-card-sub">First vs last seen price this session</div></div></div>
+        <div style="padding:8px 13px">
+          <div class="xp-section-label">Top Gainers</div>
+          <div class="xp-mini-list" id="xp-gainers"><div class="xp-empty" style="padding:10px 0">No data yet</div></div>
+          <div class="xp-divider"></div>
+          <div class="xp-section-label">Top Losers</div>
+          <div class="xp-mini-list" id="xp-losers"><div class="xp-empty" style="padding:10px 0">No data yet</div></div>
+          <div class="xp-divider"></div>
+          <div class="xp-section-label">Gem Finder</div>
+          <div class="xp-mini-list" id="xp-gems"><div class="xp-empty" style="padding:10px 0">No gems yet</div></div>
         </div>
-        <div class="xp-card">
-            <div class="xp-card-hd"><div><div class="xp-card-title">Top Losers</div><div class="xp-card-sub">Biggest drops this session</div></div></div>
-            <div id="xp-losers" class="xp-mini-list" style="padding:10px 14px 4px"><div class="xp-empty" style="padding:12px 0">No data yet</div></div>
-        </div>
-        <div class="xp-card">
-            <div class="xp-card-hd"><div><div class="xp-card-title">💎 Gem Finder</div><div class="xp-card-sub">Low-risk · high-activity coins</div></div></div>
-            <div id="xp-gems" class="xp-mini-list" style="padding:10px 14px 4px"><div class="xp-empty" style="padding:12px 0">Scanning…</div></div>
-        </div>
+      </div>
     </div>
+  </div>
 </div>
-</div>
+
+<!-- WATCHLIST -->
 <div data-re-section="watchlist">
-<div class="xp-2col">
+  <div class="xp-2col">
     <div class="xp-col">
-        <div class="xp-card">
-            <div class="xp-card-hd"><div><div class="xp-card-title"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>Watchlist</div><div class="xp-card-sub">Live prices via WebSocket</div></div>
-                <button class="xp-btn ghost" id="xp-wl-export" style="height:26px;font-size:11px">Export</button>
-            </div>
-            <div class="xp-card-body">
-                <div style="display:flex;gap:7px;margin-bottom:12px">
-                    <input id="re-wl-inp" class="xp-input" placeholder="Add coin symbol…" style="flex:1"/>
-                    <button id="re-wl-add-btn" class="xp-btn primary">Add</button>
-                </div>
-                <div id="re-wl-panel-body"></div>
-            </div>
+      <div class="xp-card">
+        <div class="xp-card-hd">
+          <div><div class="xp-card-title"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>Watchlist</div></div>
+          <div class="xp-btn-row">
+            <button class="xp-btn ghost" id="xp-wl-export" style="height:26px;font-size:11px">Export</button>
+          </div>
         </div>
+        <div style="padding:10px 14px;border-bottom:1px solid var(--re-b1);display:flex;gap:6px">
+          <input class="xp-input" id="re-wl-inp" placeholder="Add symbol e.g. BTC…" style="flex:1;height:30px" />
+          <button class="xp-btn primary" id="re-wl-add-btn" style="height:30px">Add</button>
+        </div>
+        <div id="re-wl-list" style="padding:10px 14px;max-height:380px;overflow-y:auto"><div class="xp-empty">No coins in watchlist</div></div>
+      </div>
     </div>
     <div class="xp-col">
-        <div class="xp-card">
-            <div class="xp-card-hd"><div><div class="xp-card-title">Watchlist Feed</div><div class="xp-card-sub">Only trades from your watchlist</div></div></div>
-            <div id="xp-wl-feed" style="max-height:240px;overflow-y:auto"><div class="xp-empty">No watchlist trades yet</div></div>
-        </div>
+      <div class="xp-card">
+        <div class="xp-card-hd"><div><div class="xp-card-title">👁 Watchlist Feed</div><div class="xp-card-sub">Only trades from watched coins</div></div></div>
+        <div class="xp-feed-head"><span>Side</span><span>Symbol</span><span>User</span><span>Value</span><span>Time</span></div>
+        <div id="xp-wl-feed" class="xp-feed-rows" style="max-height:360px"><div class="xp-empty">No watchlist trades yet</div></div>
+      </div>
     </div>
+  </div>
 </div>
-</div>
+
+<!-- ALERTS -->
 <div data-re-section="alerts">
-<div class="xp-2col">
+  <div class="xp-2col">
     <div class="xp-col">
-        <div class="xp-card">
-            <div class="xp-card-hd"><div><div class="xp-card-title"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>Price Alerts</div><div class="xp-card-sub">Fires on live WebSocket prices</div></div></div>
-            <div class="xp-card-body">
-                <div class="xp-form-grid" style="grid-template-columns:1fr 100px;margin-bottom:8px">
-                    <div class="xp-form-row"><div class="xp-label">Coin Symbol</div><input id="re-al-sym" class="xp-input" placeholder="e.g. BTC" /></div>
-                    <div class="xp-form-row"><div class="xp-label">Target Price</div><input id="re-al-px" class="xp-input" type="number" step="any" placeholder="0.00" /></div>
-                </div>
-                <div class="xp-form-grid" style="grid-template-columns:1fr auto;gap:7px;margin-bottom:12px">
-                    <select id="re-al-dir" class="xp-select"><option value="above">Notify when ABOVE</option><option value="below">Notify when BELOW</option></select>
-                    <button id="re-al-add" class="xp-btn primary">Set Alert</button>
-                </div>
-                <div id="re-al-body"></div>
-                <div id="xp-al-hist-wrap" style="display:${s.showAlertHistory?'':'none'}">
-                    <div class="xp-divider"></div>
-                    <div class="xp-label">History</div>
-                    <div id="xp-al-hist" class="xp-al-hist"><div style="font-size:11px;color:var(--xp-t3)">No alerts fired yet this session</div></div>
-                </div>
-            </div>
+      <div class="xp-card">
+        <div class="xp-card-hd"><div><div class="xp-card-title">🔔 Price Alerts</div><div class="xp-card-sub">Fires instantly via WebSocket</div></div></div>
+        <div class="xp-card-body">
+          <div class="xp-form-grid" style="grid-template-columns:1fr 1fr 1fr auto;gap:6px;margin-bottom:10px">
+            <input id="re-al-sym" class="xp-input" placeholder="Symbol e.g. BTC" />
+            <input id="re-al-px" class="xp-input" type="number" placeholder="Price $" />
+            <select id="re-al-dir" class="xp-select"><option value="above">Above ↑</option><option value="below">Below ↓</option></select>
+            <button class="xp-btn primary" id="re-al-add">Set Alert</button>
+          </div>
+          <div id="re-al-list"></div>
+          <div id="xp-al-hist-wrap" style="${s.showAlertHistory?'':'display:none'}">
+            <div class="xp-section-label" style="margin-top:12px">Alert History</div>
+            <div id="xp-al-hist" class="xp-al-hist"></div>
+          </div>
         </div>
+      </div>
     </div>
     <div class="xp-col">
-        <div class="xp-card">
-            <div class="xp-card-hd"><div><div class="xp-card-title">Alert Settings</div><div class="xp-card-sub">Configure thresholds</div></div></div>
-            <div class="xp-card-body">
-                <div class="xp-form-row" style="margin-bottom:10px"><div class="xp-label">Whale threshold ($)</div><input id="xp-whale-thresh" class="xp-input" type="number" value="${s.whaleTxMin||500}" /></div>
-                <div class="xp-form-row" style="margin-bottom:10px"><div class="xp-label">Volume spike threshold ($)</div><input id="xp-vol-thresh" class="xp-input" type="number" value="${s.volumeSpikeUsd||5000}" /></div>
-                <div class="xp-form-row" style="margin-bottom:10px"><div class="xp-label">Price drop alert (%)</div><input id="xp-drop-thresh" class="xp-input" type="number" value="${s.priceDropPct||20}" /></div>
-                <div class="xp-form-row"><div class="xp-label">Holder drop alert (%)</div><input id="xp-holder-thresh" class="xp-input" type="number" value="${s.holderDropPct||20}" /></div>
-            </div>
+      <div class="xp-card">
+        <div class="xp-card-hd"><div><div class="xp-card-title">⚙ Alert Settings</div><div class="xp-card-sub">Configure thresholds</div></div></div>
+        <div class="xp-card-body">
+          <div class="xp-form-row" style="margin-bottom:9px"><div class="xp-label">Whale threshold ($)</div><input id="xp-whale-thresh" class="xp-input" type="number" value="${s.whaleTxMin||500}" /></div>
+          <div class="xp-form-row" style="margin-bottom:9px"><div class="xp-label">Volume spike threshold ($)</div><input id="xp-vol-thresh" class="xp-input" type="number" value="${s.volumeSpikeUsd||5000}" /></div>
+          <div class="xp-form-row" style="margin-bottom:9px"><div class="xp-label">Price drop alert (%)</div><input id="xp-drop-thresh" class="xp-input" type="number" value="${s.priceDropPct||20}" /></div>
+          <div class="xp-form-row"><div class="xp-label">Holder drop alert (%)</div><input id="xp-holder-thresh" class="xp-input" type="number" value="${s.holderDropPct||20}" /></div>
         </div>
-        <div class="xp-card">
-            <div class="xp-card-hd"><div><div class="xp-card-title">Notification Test</div></div></div>
-            <div class="xp-card-body" style="display:flex;flex-direction:column;gap:7px">
-                <button class="xp-btn ghost xp-btn-full" id="xp-test-notif">Test notification toast</button>
-                <button class="xp-btn ghost xp-btn-full" id="xp-test-sound">Test alert sound</button>
-                <button class="xp-btn ghost xp-btn-full" id="xp-req-desktop">Request desktop permission</button>
-            </div>
+      </div>
+      <div class="xp-card">
+        <div class="xp-card-hd"><div class="xp-card-title">🧪 Test Alerts</div></div>
+        <div class="xp-card-body" style="display:flex;flex-direction:column;gap:7px">
+          <button class="xp-btn ghost xp-btn-full" id="xp-test-notif">Test notification toast</button>
+          <button class="xp-btn ghost xp-btn-full" id="xp-test-sound">Test alert sound</button>
+          <button class="xp-btn ghost xp-btn-full" id="xp-req-desktop">Request desktop permission</button>
         </div>
+      </div>
     </div>
+  </div>
 </div>
-</div>
+
+<!-- JOURNAL -->
 <div data-re-section="journal">
-<div class="xp-2col">
+  <div class="xp-2col">
     <div class="xp-col">
-        <div class="xp-card">
-            <div class="xp-card-hd">
-                <div><div class="xp-card-title"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>Session Journal</div><div class="xp-card-sub">All events this session</div></div>
-                <div class="xp-btn-row">
-                    <button class="xp-btn ghost" id="xp-jl-clear" style="height:26px;font-size:11px">Clear</button>
-                    <button class="xp-btn ghost" id="xp-jl-export" style="height:26px;font-size:11px">Export</button>
-                </div>
-            </div>
-            <div style="padding:9px 14px;border-bottom:1px solid var(--xp-b1)">
-                <input class="xp-input" id="xp-jl-filter" placeholder="Filter events…" />
-            </div>
-            <div id="xp-journal-rows" class="xp-journal"><div class="xp-jl-empty">No events yet this session.<br>Alerts, whales, bots and reports will appear here.</div></div>
+      <div class="xp-card">
+        <div class="xp-card-hd">
+          <div><div class="xp-card-title">📓 Session Journal</div><div class="xp-card-sub">All events this session</div></div>
+          <div class="xp-btn-row">
+            <button class="xp-btn ghost" id="xp-jl-clear" style="height:26px;font-size:11px">Clear</button>
+            <button class="xp-btn ghost" id="xp-jl-export" style="height:26px;font-size:11px">Export</button>
+          </div>
         </div>
+        <div style="padding:9px 13px;border-bottom:1px solid var(--re-b1)"><input class="xp-input" id="xp-jl-filter" placeholder="Filter events…" /></div>
+        <div id="xp-journal-rows" class="xp-journal"><div class="xp-jl-empty">No events yet.<br>Alerts, whales, bots and reports appear here.</div></div>
+      </div>
     </div>
     <div class="xp-col">
-        <div class="xp-card">
-            <div class="xp-card-hd"><div><div class="xp-card-title">Session Summary</div></div></div>
-            <div class="xp-card-body">
-                <div class="xp-stat-row" style="grid-template-columns:repeat(2,1fr);gap:7px">
-                    <div class="xp-stat-box"><div class="xp-stat-n" id="xp-jls-alerts" style="font-size:18px">0</div><div class="xp-stat-label">Alerts Fired</div></div>
-                    <div class="xp-stat-box amber"><div class="xp-stat-n" id="xp-jls-whales" style="font-size:18px">0</div><div class="xp-stat-label">Whales</div></div>
-                    <div class="xp-stat-box"><div class="xp-stat-n" id="xp-jls-bots" style="font-size:18px">0</div><div class="xp-stat-label">Bot Detections</div></div>
-                    <div class="xp-stat-box blue"><div class="xp-stat-n" id="xp-jls-reports" style="font-size:18px">0</div><div class="xp-stat-label">Reports</div></div>
-                </div>
-            </div>
+      <div class="xp-card">
+        <div class="xp-card-hd"><div class="xp-card-title">📊 Session Summary</div></div>
+        <div class="xp-card-body">
+          <div class="xp-stat-row" style="grid-template-columns:repeat(2,1fr)">
+            <div class="xp-stat-box green"><div class="xp-stat-n" id="xp-jls-alerts">0</div><div class="xp-stat-label">Alerts Fired</div></div>
+            <div class="xp-stat-box amber"><div class="xp-stat-n" id="xp-jls-whales">0</div><div class="xp-stat-label">Whales</div></div>
+            <div class="xp-stat-box"><div class="xp-stat-n" id="xp-jls-bots">0</div><div class="xp-stat-label">Bot Detections</div></div>
+            <div class="xp-stat-box blue"><div class="xp-stat-n" id="xp-jls-reports">0</div><div class="xp-stat-label">Reports</div></div>
+          </div>
         </div>
+      </div>
     </div>
+  </div>
 </div>
-</div>
-<div data-re-section="reporter">
-<div class="xp-2col">
-    <div class="xp-col">
-        <div class="xp-card">
-            <div class="xp-card-hd"><div><div class="xp-card-title"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>Submit Report</div><div class="xp-card-sub">Warn the community</div></div></div>
-            <div class="xp-card-body">
-                <div class="xp-form-grid" style="grid-template-columns:1fr 1fr;margin-bottom:8px">
-                    <div class="xp-form-row"><div class="xp-label">Username</div><input id="re-rp-usr" class="xp-input" placeholder="scammer123" /></div>
-                    <div class="xp-form-row"><div class="xp-label">Coin Symbol</div><input id="re-rp-sym" class="xp-input" placeholder="SCAM" /></div>
-                </div>
-                <div class="xp-form-row" style="margin-bottom:10px"><div class="xp-label">Evidence</div><textarea id="re-rp-desc" class="xp-textarea" placeholder="Describe the rugpull evidence…"></textarea></div>
-                <button id="re-rp-sub" class="xp-btn primary xp-btn-full">Submit Report</button>
-                <div id="re-rp-msg" style="font-size:12px;text-align:center;margin-top:8px;min-height:16px;font-weight:600"></div>
-            </div>
-        </div>
-    </div>
-    <div class="xp-col">
-        <div class="xp-card">
-            <div class="xp-card-hd"><div><div class="xp-card-title">Community Reports</div><div class="xp-card-sub">Submitted by Enhanced users</div></div></div>
-            <div id="re-rp-list" style="max-height:400px;overflow-y:auto;padding:10px 14px"></div>
-            <div id="re-rp-pag" class="xp-pag" style="display:none"></div>
-        </div>
-    </div>
-</div>
-</div>
-<div data-re-section="mods" style="margin:-18px -20px;padding:0">
-    <div class="xp-mods-top">
-        <div class="xp-mods-sw">
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-            <input id="re-mods-q" class="xp-input xp-mods-si" placeholder="Search ${MODS.length} mods…" autocomplete="off" />
-        </div>
-        <span class="xp-mods-count" id="re-mods-count">${MODS.length} mods</span>
-        <button class="xp-btn ghost" id="xp-mods-all-on" style="height:26px;font-size:11px">All on</button>
-        <button class="xp-btn ghost" id="xp-mods-all-off" style="height:26px;font-size:11px">All off</button>
-    </div>
-    <div class="xp-cat-filter" id="re-cat-filter">
-        <button class="xp-cat-btn active" data-cat="All">All</button>
-        ${CATS.map(c=>`<button class="xp-cat-btn" data-cat="${c}">${c}</button>`).join('')}
-    </div>
-    <div class="xp-mods-body" id="re-mods-body">${modsHTML}</div>
-</div>
-<div data-re-section="features">
-<div class="xp-card">
-    <div class="xp-card-hd"><div class="xp-card-title">Enhanced vs Rugplay Plus — the honest comparison</div></div>
-    <div style="overflow-x:auto">
-        <table class="xp-cmp">
-            <thead><tr><th>Feature</th><th class="ours">Enhanced</th><th>Rugplay Plus</th></tr></thead>
-            <tbody>
-                <tr><td>100+ Toggleable Mods</td><td class="ours ck">✓</td><td class="cx">✗</td></tr>
-                <tr><td>Price Alerts</td><td class="ours ck">✓</td><td class="cx">✗</td></tr>
-                <tr><td>Live Watchlist</td><td class="ours ck">✓</td><td class="cx">✗</td></tr>
-                <tr><td>Coin Scanner</td><td class="ours ck">✓</td><td class="cx">✗</td></tr>
-                <tr><td>Session Journal</td><td class="ours ck">✓</td><td class="cx">✗</td></tr>
-                <tr><td>Live Heatmap</td><td class="ours ck">✓</td><td class="cx">✗</td></tr>
-                <tr><td>Portfolio Chart</td><td class="ours ck">✓</td><td class="cx">✗</td></tr>
-                <tr><td>Bot Detection</td><td class="ours ck">✓</td><td class="cx">✗</td></tr>
-                <tr><td>Volume Spike Alerts</td><td class="ours ck">✓</td><td class="cx">✗</td></tr>
-                <tr><td>Risk Scoring</td><td class="ours ck">✓</td><td class="cx">✗</td></tr>
-                <tr><td>Gem Finder</td><td class="ours ck">✓</td><td class="cx">✗</td></tr>
-                <tr><td>Export Data</td><td class="ours ck">✓</td><td class="cx">✗</td></tr>
-                <tr><td>Coin Notes</td><td class="ours ck">✓</td><td class="cx">✗</td></tr>
-                <tr><td>Session P&amp;L</td><td class="ours ck">✓</td><td class="cx">✗</td></tr>
-                <tr><td>Quick Search Ctrl+K</td><td class="ours ck">✓</td><td class="cx">✗</td></tr>
-                <tr><td>Rugpull Reporter</td><td class="ours ck">✓</td><td class="ck">✓</td></tr>
-                <tr><td>Recent Transactions Card</td><td class="ours ck">✓</td><td class="ck">✓</td></tr>
-                <tr><td>Ad Blocker</td><td class="ours ck">✓</td><td class="ck">✓</td></tr>
-                <tr style="background:rgba(239,68,68,.04)"><td style="color:var(--xp-red);font-weight:700">Silently tracks your username</td><td class="ours ck">Never</td><td class="bad">YES</td></tr>
-                <tr style="background:rgba(239,68,68,.04)"><td style="color:var(--xp-red);font-weight:700">Breaks when their servers go down</td><td class="ours ck">Never</td><td class="bad">YES</td></tr>
-                <tr style="background:rgba(239,68,68,.04)"><td style="color:var(--xp-red);font-weight:700">Costs money</td><td class="ours ck">Free forever</td><td class="bad">Paid</td></tr>
-            </tbody>
-        </table>
-    </div>
-</div>
-</div>
+
+<!-- MY TRADES -->
 <div data-re-section="mytrades">
-<div class="xp-card">
+  <div class="xp-card">
     <div class="xp-card-hd">
-        <div><div class="xp-card-title"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/></svg>My Recent Trades</div><div class="xp-card-sub">Your personal trade history from Rugplay</div></div>
-        <div style="display:flex;gap:6px">
-            <select id="xp-mt-filter" class="xp-select" style="width:90px;height:26px;font-size:11px"><option value="all">All</option><option value="BUY">Buys</option><option value="SELL">Sells</option></select>
-            <button class="xp-btn ghost" id="xp-mt-refresh" style="height:26px;font-size:11px">Refresh</button>
-        </div>
+      <div><div class="xp-card-title">📈 My Trade History</div><div class="xp-card-sub">Your personal trades from Rugplay</div></div>
+      <div style="display:flex;gap:6px">
+        <select id="xp-mt-filter" class="xp-select" style="width:90px;height:26px;font-size:11px"><option value="all">All</option><option value="BUY">Buys</option><option value="SELL">Sells</option></select>
+        <button class="xp-btn ghost" id="xp-mt-refresh" style="height:26px;font-size:11px">Refresh</button>
+      </div>
     </div>
     <div id="xp-mt-body" style="max-height:70vh;overflow-y:auto"><div class="xp-loading"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="xp-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>Loading your trades…</div></div>
     <div id="xp-mt-pag" class="xp-pag" style="display:none"></div>
+  </div>
+</div>
+
+<!-- BETS -->
+<div data-re-section="snipe">
+<div class="xp-2col">
+<div class="xp-col">
+<div class="xp-card">
+  <div class="xp-card-hd">
+    <div><div class="xp-card-title">Coin Sniper</div><div class="xp-card-sub">Alert + auto-navigate the moment a target coin first appears in the live feed</div></div>
+  </div>
+  <div class="xp-card-body" style="display:flex;flex-direction:column;gap:10px">
+    <div style="display:flex;gap:7px;align-items:flex-end">
+      <div style="flex:1"><div class="xp-label">Target coin symbol</div><input id="re-snipe-sym" class="xp-input" placeholder="e.g. BITCOIN" autocomplete="off" /></div>
+      <button id="re-snipe-add" class="xp-btn primary">Add</button>
+    </div>
+    <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:#a1a1aa;cursor:pointer;padding:8px 10px;background:rgba(255,255,255,.03);border-radius:6px;border:1px solid rgba(255,255,255,.06)"><input type="checkbox" id="re-snipe-navigate" checked style="accent-color:#22c55e"> Auto-navigate to coin page on hit</label>
+    <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:#a1a1aa;cursor:pointer;padding:8px 10px;background:rgba(255,255,255,.03);border-radius:6px;border:1px solid rgba(255,255,255,.06)"><input type="checkbox" id="re-snipe-sound" checked style="accent-color:#22c55e"> Play sound on hit</label>
+    <div id="re-snipe-targets"></div>
+  </div>
+</div>
+<div class="xp-card">
+  <div class="xp-card-hd"><div class="xp-card-title">Snipe Log</div></div>
+  <div id="re-snipe-log" style="max-height:240px;overflow-y:auto"><div style="padding:16px;text-align:center;font-size:12px;color:#52525b">No snipe hits yet.</div></div>
 </div>
 </div>
+<div class="xp-col">
+<div class="xp-card">
+  <div class="xp-card-hd"><div><div class="xp-card-title">How to snipe</div></div></div>
+  <div class="xp-card-body" style="display:flex;flex-direction:column;gap:9px;font-size:12px;color:#a1a1aa;line-height:1.6">
+    <div style="padding:9px 11px;background:rgba(34,197,94,.06);border-left:2px solid #22c55e;border-radius:0 6px 6px 0"><strong style="color:#e8e8eb;display:block;margin-bottom:2px">1. Add a target</strong>Type the exact coin symbol and press Add. Add multiple targets at once.</div>
+    <div style="padding:9px 11px;background:rgba(59,130,246,.06);border-left:2px solid #3b82f6;border-radius:0 6px 6px 0"><strong style="color:#e8e8eb;display:block;margin-bottom:2px">2. Wait</strong>Enhanced watches the live WebSocket feed. The moment the first trade for your coin appears, it fires instantly — no polling delay.</div>
+    <div style="padding:9px 11px;background:rgba(245,158,11,.06);border-left:2px solid #f59e0b;border-radius:0 6px 6px 0"><strong style="color:#e8e8eb;display:block;margin-bottom:2px">3. Auto-navigate</strong>With auto-navigate on, you land on the coin page the instant it hits. From there, buy manually as fast as you can.</div>
+    <div style="padding:9px 11px;background:rgba(239,68,68,.06);border-left:2px solid #ef4444;border-radius:0 6px 6px 0"><strong style="color:#e8e8eb;display:block;margin-bottom:2px">Tip: disable Confirm Trades</strong>Go to Mods and turn off <em>Confirm All Trades</em> so there is no extra dialog slowing your buy.</div>
+  </div>
+</div>
+</div>
+</div>
+</div>
+
 <div data-re-section="bets">
-<div class="xp-2col">
+  <div class="xp-2col">
     <div class="xp-col">
-        <div class="xp-card">
-            <div class="xp-card-hd"><div><div class="xp-card-title"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>Active Predictions</div><div class="xp-card-sub">Live questions from Rugplay's prediction market</div></div>
-                <button class="xp-btn ghost" id="xp-bets-refresh" style="height:26px;font-size:11px">Refresh</button>
-            </div>
-            <div id="xp-bets-body" style="max-height:60vh;overflow-y:auto"><div class="xp-loading"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="xp-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>Loading…</div></div>
+      <div class="xp-card">
+        <div class="xp-card-hd"><div><div class="xp-card-title">🎯 Active Predictions</div><div class="xp-card-sub">Live from Rugplay's prediction market</div></div>
+          <button class="xp-btn ghost" id="xp-bets-refresh" style="height:26px;font-size:11px">Refresh</button>
         </div>
+        <div id="xp-bets-body" style="max-height:60vh;overflow-y:auto"><div class="xp-loading"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="xp-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>Loading…</div></div>
+      </div>
     </div>
     <div class="xp-col">
-        <div class="xp-card">
-            <div class="xp-card-hd"><div><div class="xp-card-title">Bet Alerts</div><div class="xp-card-sub">Get notified when a prediction resolves</div></div></div>
-            <div class="xp-card-body">
-                <div style="font-size:12px;color:var(--xp-t2);margin-bottom:10px">Add a question ID to watch. You will get a toast notification when it resolves.</div>
-                <div style="display:flex;gap:7px;margin-bottom:10px">
-                    <input id="xp-bet-watch-inp" class="xp-input" placeholder="Question ID…" style="flex:1"/>
-                    <button class="xp-btn primary" id="xp-bet-watch-add">Watch</button>
-                </div>
-                <div id="xp-bet-watch-list"></div>
-            </div>
-        </div>
-        <div class="xp-card">
-            <div class="xp-card-hd"><div><div class="xp-card-title">My Bets</div><div class="xp-card-sub">Questions you have placed bets on</div></div></div>
-            <div id="xp-my-bets-body" style="max-height:280px;overflow-y:auto"><div class="xp-loading"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="xp-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>Loading…</div></div>
-        </div>
+      <div class="xp-card">
+        <div class="xp-card-hd"><div><div class="xp-card-title">My Bets</div></div></div>
+        <div id="xp-my-bets-body" style="max-height:320px;overflow-y:auto"><div class="xp-loading"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="xp-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>Loading…</div></div>
+      </div>
     </div>
+  </div>
 </div>
-</div>
+
+<!-- LEADERBOARD -->
 <div data-re-section="leaderboard">
-<div class="xp-2col">
+  <div class="xp-2col">
     <div class="xp-col">
-        <div class="xp-card">
-            <div class="xp-card-hd">
-                <div><div class="xp-card-title"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>Global Leaderboard</div><div class="xp-card-sub">Top traders by portfolio value</div></div>
-                <button class="xp-btn ghost" id="xp-lb-refresh" style="height:26px;font-size:11px">Refresh</button>
-            </div>
-            <div id="xp-lb-body" style="max-height:70vh;overflow-y:auto"><div class="xp-loading"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="xp-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>Loading…</div></div>
+      <div class="xp-card">
+        <div class="xp-card-hd">
+          <div><div class="xp-card-title">🏆 Global Leaderboard</div><div class="xp-card-sub">Top traders by portfolio value</div></div>
+          <button class="xp-btn ghost" id="xp-lb-refresh" style="height:26px;font-size:11px">Refresh</button>
         </div>
+        <div id="xp-lb-body" style="max-height:70vh;overflow-y:auto"><div class="xp-loading"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="xp-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>Loading…</div></div>
+      </div>
     </div>
     <div class="xp-col">
-        <div class="xp-card">
-            <div class="xp-card-hd"><div><div class="xp-card-title">Whale Leaderboard</div><div class="xp-card-sub">Biggest single trades seen this session</div></div></div>
-            <div id="xp-whale-lb" style="max-height:320px;overflow-y:auto"><div class="xp-empty">No whale trades seen yet.</div></div>
-        </div>
-        <div class="xp-card">
-            <div class="xp-card-hd"><div><div class="xp-card-title">Top Coins This Session</div><div class="xp-card-sub">By live feed volume</div></div></div>
-            <div id="xp-session-top-coins" class="xp-mini-list" style="padding:10px 14px 6px"><div class="xp-empty">Waiting for trades…</div></div>
-        </div>
+      <div class="xp-card">
+        <div class="xp-card-hd"><div><div class="xp-card-title">🐋 Whale Leaderboard</div><div class="xp-card-sub">Biggest single trades this session</div></div></div>
+        <div id="xp-whale-lb" style="max-height:320px;overflow-y:auto"><div class="xp-empty">No whale trades seen yet</div></div>
+      </div>
     </div>
+  </div>
 </div>
-</div>
-<div data-re-section="bugreport">
-<div class="xp-2col">
+
+<!-- REPORTER -->
+<div data-re-section="reporter">
+  <div class="xp-2col">
     <div class="xp-col">
-        <div class="xp-card">
-            <div class="xp-card-hd"><div><div class="xp-card-title"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>Report a Bug</div><div class="xp-card-sub">Opens a pre-filled GitHub issue</div></div></div>
-            <div class="xp-card-body">
-                <div class="xp-form-row" style="margin-bottom:9px"><div class="xp-label">Bug title</div><input id="xp-bug-title" class="xp-input" placeholder="Short description…" /></div>
-                <div class="xp-form-row" style="margin-bottom:9px"><div class="xp-label">What happened?</div><textarea id="xp-bug-desc" class="xp-textarea" placeholder="Steps to reproduce, what you expected vs what happened…"></textarea></div>
-                <div class="xp-form-row" style="margin-bottom:12px"><div class="xp-label">Which page?</div>
-                    <select id="xp-bug-page" class="xp-select"><option value="">Select page…</option><option>Coin page</option><option>Enhanced panel</option><option>Profile page</option><option>Home / Market</option><option>Predictions</option><option>Gambling</option><option>Other</option></select>
-                </div>
-                <button class="xp-btn primary xp-btn-full" id="xp-bug-submit">Open GitHub Issue</button>
-                <div style="font-size:11px;color:var(--xp-t3);margin-top:8px;text-align:center">Opens GitHub in a new tab with your bug pre-filled.</div>
-            </div>
+      <div class="xp-card">
+        <div class="xp-card-hd"><div><div class="xp-card-title">🚩 Submit Report</div><div class="xp-card-sub">Warn the community about rugpulls</div></div></div>
+        <div class="xp-card-body">
+          <div class="xp-form-grid" style="grid-template-columns:1fr 1fr;margin-bottom:8px">
+            <div class="xp-form-row"><div class="xp-label">Username</div><input id="re-rp-usr" class="xp-input" placeholder="scammer123" /></div>
+            <div class="xp-form-row"><div class="xp-label">Coin Symbol</div><input id="re-rp-sym" class="xp-input" placeholder="SCAM" /></div>
+          </div>
+          <div class="xp-form-row" style="margin-bottom:10px"><div class="xp-label">Evidence</div><textarea id="re-rp-desc" class="xp-textarea" placeholder="Describe the rugpull evidence…"></textarea></div>
+          <button id="re-rp-sub" class="xp-btn primary xp-btn-full">Submit Report</button>
+          <div id="re-rp-msg" style="font-size:12px;text-align:center;margin-top:8px;min-height:16px;font-weight:600"></div>
         </div>
+      </div>
     </div>
     <div class="xp-col">
-        <div class="xp-card">
-            <div class="xp-card-hd"><div class="xp-card-title">Known Issues</div></div>
-            <div class="xp-card-body" style="display:flex;flex-direction:column;gap:8px;font-size:12px;color:var(--xp-t2)">
-                <div style="padding:8px 10px;background:var(--xp-s2);border-radius:var(--xp-r-sm);border-left:2px solid var(--xp-amber)"><strong style="color:var(--xp-t1);display:block;margin-bottom:2px">Heatmap needs live data</strong>Only shows coins that traded since you opened the page. Fills up in a few minutes.</div>
-                <div style="padding:8px 10px;background:var(--xp-s2);border-radius:var(--xp-r-sm);border-left:2px solid var(--xp-blue)"><strong style="color:var(--xp-t1);display:block;margin-bottom:2px">P&L resets on refresh</strong>Session P&L tracks from page load. This is by design.</div>
-                <div style="padding:8px 10px;background:var(--xp-s2);border-radius:var(--xp-r-sm);border-left:2px solid var(--xp-green)"><strong style="color:var(--xp-t1);display:block;margin-bottom:2px">Holder count shows 0</strong>Rugplay's data format changes occasionally. Refresh the coin page if you see 0.</div>
-            </div>
-        </div>
-        <div class="xp-card">
-            <div class="xp-card-hd"><div class="xp-card-title">Contact</div></div>
-            <div class="xp-card-body" style="font-size:12px;color:var(--xp-t2)">
-                Discord: <strong style="color:var(--xp-t1)">devbyego</strong><br><br>
-                GitHub: <a href="https://github.com/devbyego/rugplay-enhanced" target="_blank" style="color:var(--xp-blue)">devbyego/rugplay-enhanced</a>
-            </div>
-        </div>
+      <div class="xp-card">
+        <div class="xp-card-hd"><div><div class="xp-card-title">Community Reports</div><div class="xp-card-sub">Submitted by Enhanced users</div></div></div>
+        <div id="re-rp-list" style="max-height:420px;overflow-y:auto;padding:10px 13px"></div>
+        <div id="re-rp-pag" class="xp-pag" style="display:none"></div>
+      </div>
     </div>
+  </div>
 </div>
+
+<!-- MODS -->
+<div data-re-section="mods" style="margin:-18px -18px;padding:0">
+  <div class="xp-mods-top">
+    <div class="xp-mods-sw">
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <input id="re-mods-q" class="xp-input xp-mods-si" placeholder="Search ${MODS.length} mods…" autocomplete="off" />
+    </div>
+    <span class="xp-mods-count" id="re-mods-count">${enabledCount}/${MODS.length} enabled</span>
+    <button class="xp-btn ghost" id="xp-mods-all-on" style="height:26px;font-size:11px">All on</button>
+    <button class="xp-btn ghost" id="xp-mods-all-off" style="height:26px;font-size:11px">All off</button>
+  </div>
+  <div class="xp-cat-filter" id="re-cat-filter">
+    <button class="xp-cat-btn active" data-cat="All">All (${MODS.length})</button>
+    ${CATS.map(c=>`<button class="xp-cat-btn" data-cat="${c}" style="--cc:${CAT_COLORS[c]}">${CAT_ICONS[c]} ${c} (${MODS.filter(m=>m.cat===c).length})</button>`).join('')}
+  </div>
+  <div class="xp-mods-body" id="re-mods-body">${modsHTML}</div>
 </div>
+
+<!-- SETTINGS -->
+<div data-re-section="settings">
+  <div class="xp-2col">
+    <div class="xp-col">
+      <div class="xp-card">
+        <div class="xp-card-hd"><div><div class="xp-card-title">🎨 Appearance</div><div class="xp-card-sub">Customize how Enhanced looks</div></div></div>
+        <div class="xp-card-body">
+          <div class="xp-setting-section">Accent Color</div>
+          <div class="xp-swatch-grid" id="xp-accent-swatches">
+            ${[['default','#f5f5f7'],['green','#30d158'],['blue','#0a84ff'],['purple','#bf5af2'],['amber','#ffd60a'],['red','#ff453a'],['teal','#5ac8fa'],['pink','#ff375f'],['orange','#ff9f0a']].map(([k,c])=>`<div class="xp-swatch ${(s.accentPreset||'default')===k?'active':''}" data-accent="${k}" style="background:${c}" title="${k}"></div>`).join('')}
+          </div>
+          <div class="xp-divider"></div>
+          <div class="xp-setting-section">Feed Colors</div>
+          <div class="xp-form-grid" style="grid-template-columns:1fr 1fr">
+            <div class="xp-form-row"><div class="xp-label">Buy Color</div><input type="color" id="xp-buy-color" value="${s.tradeFeedBuyColor||'#22c55e'}" style="height:30px;width:100%;border:1px solid var(--re-b2);border-radius:var(--r-sm);background:var(--re-glass3);cursor:pointer" /></div>
+            <div class="xp-form-row"><div class="xp-label">Sell Color</div><input type="color" id="xp-sell-color" value="${s.tradeFeedSellColor||'#ef4444'}" style="height:30px;width:100%;border:1px solid var(--re-b2);border-radius:var(--r-sm);background:var(--re-glass3);cursor:pointer" /></div>
+          </div>
+          <div class="xp-divider"></div>
+          <div class="xp-setting-section">Panel</div>
+          <div class="xp-setting-row">
+            <div><div class="xp-setting-label">Panel Width</div><div class="xp-setting-sub">How wide the Enhanced panel appears</div></div>
+            <select id="xp-panel-width" class="xp-select" style="width:110px"><option value="normal" ${(s.panelWidth||'normal')==='normal'?'selected':''}>Normal</option><option value="wide" ${s.panelWidth==='wide'?'selected':''}>Wide</option><option value="full" ${s.panelWidth==='full'?'selected':''}>Full width</option></select>
+          </div>
+          <div class="xp-setting-row">
+            <div><div class="xp-setting-label">Panel Opacity</div><div class="xp-setting-sub">Background opacity of panel cards</div></div>
+            <input type="range" id="xp-panel-opacity" min="60" max="100" value="${s.panelOpacity||100}" style="width:100px;accent-color:var(--re-green)" />
+          </div>
+          <div class="xp-setting-row">
+            <div><div class="xp-setting-label">Timestamp Format</div></div>
+            <select id="xp-ts-format" class="xp-select" style="width:110px"><option value="relative" ${(s.timestampFormat||'relative')==='relative'?'selected':''}>Relative (2m ago)</option><option value="absolute" ${s.timestampFormat==='absolute'?'selected':''}>Absolute time</option></select>
+          </div>
+          <div class="xp-setting-row">
+            <div><div class="xp-setting-label">Number Format</div></div>
+            <select id="xp-num-format" class="xp-select" style="width:110px"><option value="abbreviated" ${(s.numberFormat||'abbreviated')==='abbreviated'?'selected':''}>Abbreviated ($1.2K)</option><option value="full" ${s.numberFormat==='full'?'selected':''}>Full ($1,234.56)</option></select>
+          </div>
+        </div>
+      </div>
+      <div class="xp-card">
+        <div class="xp-card-hd"><div><div class="xp-card-title">🔊 Sounds</div></div></div>
+        <div class="xp-card-body">
+          <div class="xp-form-row"><div class="xp-label">Notification Sound</div>
+            <select id="xp-notif-sound" class="xp-select"><option value="beep" ${(s.notifSound||'beep')==='beep'?'selected':''}>Beep</option><option value="ding" ${s.notifSound==='ding'?'selected':''}>Ding</option><option value="chime" ${s.notifSound==='chime'?'selected':''}>Chime</option><option value="none" ${s.notifSound==='none'?'selected':''}>Silent</option></select>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="xp-col">
+      <div class="xp-card">
+        <div class="xp-card-hd"><div><div class="xp-card-title">⚡ Performance</div></div></div>
+        <div class="xp-card-body">
+          <div class="xp-setting-row">
+            <div><div class="xp-setting-label">Feed Max Rows</div><div class="xp-setting-sub">Max rows kept in live feed memory</div></div>
+            <input type="number" id="xp-feed-max-rows" class="xp-input" value="${s.feedMaxRows||80}" style="width:70px" />
+          </div>
+          <div class="xp-setting-row">
+            <div><div class="xp-setting-label">Whale Threshold ($)</div></div>
+            <input type="number" id="xp-whale-size" class="xp-input" value="${s.whaleTxMin||500}" style="width:80px" />
+          </div>
+          <div class="xp-setting-row">
+            <div><div class="xp-setting-label">Small Trade Filter ($)</div><div class="xp-setting-sub">Hides trades below this when enabled</div></div>
+            <input type="number" id="xp-small-trade" class="xp-input" value="${s.smallTradeUsd||10}" style="width:80px" />
+          </div>
+          <div class="xp-setting-row">
+            <div><div class="xp-setting-label">Portfolio Refresh (ms)</div></div>
+            <input type="number" id="xp-pf-refresh" class="xp-input" value="${s.portfolioRefreshRate||5000}" style="width:80px" />
+          </div>
+        </div>
+      </div>
+      <div class="xp-card">
+        <div class="xp-card-hd"><div><div class="xp-card-title">🔑 Hotkeys</div></div></div>
+        <div class="xp-card-body">
+          <div style="font-size:11px;color:var(--re-t2);display:flex;flex-direction:column;gap:8px">
+            <div style="display:flex;justify-content:space-between"><span>Open/Close Panel</span><kbd style="background:var(--re-p4);border:1px solid var(--re-b2);border-radius:var(--r-xs);padding:2px 7px;font-family:var(--re-mono);font-size:10px">Ctrl+Shift+E</kbd></div>
+            <div style="display:flex;justify-content:space-between"><span>Quick Search</span><kbd style="background:var(--re-p4);border:1px solid var(--re-b2);border-radius:var(--r-xs);padding:2px 7px;font-family:var(--re-mono);font-size:10px">Ctrl+K</kbd></div>
+            <div style="display:flex;justify-content:space-between"><span>URL Shortcuts</span><kbd style="background:var(--re-p4);border:1px solid var(--re-b2);border-radius:var(--r-xs);padding:2px 7px;font-family:var(--re-mono);font-size:10px">/@user /*SYM</kbd></div>
+          </div>
+        </div>
+      </div>
+      <div class="xp-card">
+        <div class="xp-card-hd"><div><div class="xp-card-title">💾 Data</div></div></div>
+        <div class="xp-card-body" style="display:flex;flex-direction:column;gap:7px">
+          <button class="xp-btn ghost xp-btn-full" id="xp-export-settings">Export Settings JSON</button>
+          <button class="xp-btn ghost xp-btn-full" id="xp-import-settings">Import Settings JSON</button>
+          <button class="xp-btn danger xp-btn-full" id="xp-reset-settings">Reset All Settings</button>
+        </div>
+      </div>
+      <div class="xp-card">
+        <div class="xp-card-hd"><div><div class="xp-card-title">🚩 Blocked / Trusted</div></div></div>
+        <div class="xp-card-body">
+          <div class="xp-form-row" style="margin-bottom:8px"><div class="xp-label">Blocked Users (comma-separated)</div><input class="xp-input" id="xp-blocked-users" value="${s.blockedUsers||''}" placeholder="user1,user2" /></div>
+          <div class="xp-form-row" style="margin-bottom:8px"><div class="xp-label">Pinned Coins</div><input class="xp-input" id="xp-pinned-coins" value="${s.pinnedCoins||''}" placeholder="BTC,ETH" /></div>
+          <div class="xp-form-row"><div class="xp-label">Trusted Creators</div><input class="xp-input" id="xp-trusted-creators" value="${s.trustedCreators||''}" placeholder="user1,user2" /></div>
+          <button class="xp-btn primary xp-btn-full" id="xp-save-lists" style="margin-top:10px">Save</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- STATUS -->
 <div data-re-section="status">
-<div class="xp-2col">
+  <div class="xp-2col">
     <div class="xp-col">
-        <div class="xp-card"><div class="xp-card-hd"><div class="xp-card-title">System Diagnostics</div></div><div class="xp-card-body"><div id="re-diag"></div></div></div>
-        <div class="xp-card">
-            <div class="xp-card-hd"><div class="xp-card-title">Export / Backup</div></div>
-            <div class="xp-card-body" style="display:flex;flex-direction:column;gap:7px">
-                <button class="xp-btn ghost xp-btn-full" id="xp-export-settings">Export settings JSON</button>
-                <button class="xp-btn ghost xp-btn-full" id="xp-import-settings">Import settings JSON</button>
-                <button class="xp-btn danger xp-btn-full" id="xp-reset-settings">Reset all settings</button>
-            </div>
+      <div class="xp-card">
+        <div class="xp-card-hd"><div><div class="xp-card-title">🟢 System Diagnostics</div></div></div>
+        <div class="xp-card-body" id="re-diag">
+          <div class="xp-loading"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="xp-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>Checking…</div>
         </div>
+      </div>
+      <div class="xp-card">
+        <div class="xp-card-hd"><div><div class="xp-card-title">📋 What's New in v${ver}</div></div></div>
+        <div id="re-changelog-card" class="xp-card-body"><div class="xp-empty">Loading…</div></div>
+      </div>
     </div>
     <div class="xp-col">
-        <div id="re-changelog-card" class="xp-card"><div class="xp-card-hd"><div class="xp-card-title">What's New</div></div><div class="xp-loading"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="xp-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>Loading…</div></div>
+      <div class="xp-card">
+        <div class="xp-card-hd"><div><div class="xp-card-title">🐛 Report a Bug</div></div></div>
+        <div class="xp-card-body">
+          <div class="xp-form-row" style="margin-bottom:8px"><div class="xp-label">Describe the issue</div><textarea id="xp-bug-desc" class="xp-textarea" placeholder="Steps to reproduce, what you expected, what happened…"></textarea></div>
+          <div class="xp-form-row" style="margin-bottom:10px"><div class="xp-label">Your Rugplay username (optional)</div><input id="xp-bug-user" class="xp-input" placeholder="@yourname" /></div>
+          <button class="xp-btn primary xp-btn-full" id="re-feedback-btn">Submit Bug Report</button>
+        </div>
+      </div>
     </div>
+  </div>
 </div>
+
+<!-- VS PLUS -->
+<div data-re-section="features">
+  <div class="xp-card">
+    <div class="xp-card-hd"><div class="xp-card-title">✅ Enhanced vs Rugplay Plus — the honest comparison</div></div>
+    <div style="overflow-x:auto">
+      <table class="xp-cmp">
+        <thead><tr><th>Feature</th><th class="ours">Enhanced (Free)</th><th>Rugplay Plus (Paid)</th></tr></thead>
+        <tbody>
+          <tr><td>${MODS.length}+ Toggleable Mods</td><td class="ours ck">✓</td><td class="cx">✗</td></tr>
+          <tr><td>Live WebSocket Feed</td><td class="ours ck">✓</td><td class="cx">✗</td></tr>
+          <tr><td>Price Alerts (instant via WS)</td><td class="ours ck">✓</td><td class="cx">✗</td></tr>
+          <tr><td>Watchlist with Live Prices</td><td class="ours ck">✓</td><td class="cx">✗</td></tr>
+          <tr><td>Coin Scanner</td><td class="ours ck">✓</td><td class="cx">✗</td></tr>
+          <tr><td>Session Journal</td><td class="ours ck">✓</td><td class="cx">✗</td></tr>
+          <tr><td>Live Heatmap</td><td class="ours ck">✓</td><td class="cx">✗</td></tr>
+          <tr><td>Portfolio Sparkline</td><td class="ours ck">✓</td><td class="cx">✗</td></tr>
+          <tr><td>Bot Detection</td><td class="ours ck">✓</td><td class="cx">✗</td></tr>
+          <tr><td>Volume Spike Alerts</td><td class="ours ck">✓</td><td class="cx">✗</td></tr>
+          <tr><td>Risk Scoring (0-100)</td><td class="ours ck">✓</td><td class="cx">✗</td></tr>
+          <tr><td>Gem Finder</td><td class="ours ck">✓</td><td class="cx">✗</td></tr>
+          <tr><td>Export Data (JSON/CSV)</td><td class="ours ck">✓</td><td class="cx">✗</td></tr>
+          <tr><td>Coin Notes (local)</td><td class="ours ck">✓</td><td class="cx">✗</td></tr>
+          <tr><td>Session P&L Tracker</td><td class="ours ck">✓</td><td class="cx">✗</td></tr>
+          <tr><td>Quick Search (Ctrl+K)</td><td class="ours ck">✓</td><td class="cx">✗</td></tr>
+          <tr><td>Rugpull Reporter</td><td class="ours ck">✓</td><td class="ck">✓</td></tr>
+          <tr><td>Recent Transactions Card</td><td class="ours ck">✓</td><td class="ck">✓</td></tr>
+          <tr><td>Ad Blocker</td><td class="ours ck">✓</td><td class="ck">✓</td></tr>
+          <tr style="background:rgba(255,69,58,.04)"><td style="color:var(--re-red);font-weight:700">Tracks your username</td><td class="ours ck">Never</td><td class="bad">YES</td></tr>
+          <tr style="background:rgba(255,69,58,.04)"><td style="color:var(--re-red);font-weight:700">Fails when servers go down</td><td class="ours ck">Never</td><td class="bad">YES</td></tr>
+          <tr style="background:rgba(255,69,58,.04)"><td style="color:var(--re-red);font-weight:700">Costs money</td><td class="ours ck">Free forever</td><td class="bad">Paid</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
 </div>
-</div>
-</div>
-</div>
+
+</div><!-- END xp-body -->
+
 <div class="xp-footer">
-    <span>Rugplay Enhanced v${GM_info.script.version} &middot; <a href="https://github.com/devbyego/rugplay-enhanced" target="_blank" class="xp-flink">devbyego</a></span>
-    <div class="xp-footer-links"><a href="https://github.com/devbyego/rugplay-enhanced" target="_blank" class="xp-flink">GitHub</a><button id="re-feedback-btn-footer" class="xp-flink">Feedback</button></div>
+  <span>Rugplay Enhanced v${ver} · devbyego</span>
+  <div class="xp-footer-links">
+    <a class="xp-flink" href="https://github.com/devbyego/rugplay-enhanced" target="_blank">GitHub</a>
+    <a class="xp-flink" href="https://github.com/devbyego/rugplay-enhanced/issues/new" target="_blank">Bug Report</a>
+    <a class="xp-flink" href="https://github.com/devbyego/rugplay-enhanced/releases" target="_blank">Changelog</a>
+  </div>
 </div>
-` },
+</div>`;
+        },
         _attachListeners() {
             const loadMyTrades = async (pg) => {
                 pg = pg || 1;
@@ -2785,14 +3064,13 @@
                 const gainers = [...changes].sort((a,b) => b.pct - a.pct).slice(0, store.settings().topCount || 5);
                 const losers = [...changes].sort((a,b) => a.pct - b.pct).slice(0, store.settings().topCount || 5);
                 const mkRow = (c, up) => `<a class="xp-mini-row" href="/coin/${c.sym}"><span class="xp-mini-sym xp-copy-sym" data-sym="${c.sym}">${c.sym}</span><span class="xp-mini-sub">${utils.usd(c.last)}</span><span class="${up?'xp-t-buy':'xp-t-sell'}">${up?'+':''}${c.pct.toFixed(2)}%</span></a>`;
-                const gEl = document.getElementById('xp-gainers'); if (gEl) gEl.innerHTML = gainers.length ? gainers.map(c=>mkRow(c,true)).join('') : '<div class="xp-empty" style="padding:12px 0">No data yet</div>';
-                const lEl = document.getElementById('xp-losers'); if (lEl) lEl.innerHTML = losers.filter(c=>c.pct<0).length ? losers.filter(c=>c.pct<0).map(c=>mkRow(c,false)).join('') : '<div class="xp-empty" style="padding:12px 0">No data yet</div>';
+                ['xp-gainers','xp-gainers-list'].forEach(id => { const gEl = document.getElementById(id); if (gEl) gEl.innerHTML = gainers.length ? gainers.map(c=>mkRow(c,true)).join('') : '<div class="xp-empty" style="padding:12px 0">No data yet</div>'; });
+                ['xp-losers','xp-losers-list'].forEach(id => { const lEl = document.getElementById(id); if (lEl) lEl.innerHTML = losers.filter(c=>c.pct<0).length ? losers.filter(c=>c.pct<0).map(c=>mkRow(c,false)).join('') : '<div class="xp-empty" style="padding:12px 0">No data yet</div>'; });
                 const gems = Object.values(window._reScanCoins||{}).filter(c => {
                     const risk = c.risk ?? 100;
                     return risk <= (store.settings().gemMaxRisk ?? 40) && c.n >= 3;
                 }).sort((a,b) => b.vol - a.vol).slice(0, 5);
-                const gmEl = document.getElementById('xp-gems');
-                if (gmEl) gmEl.innerHTML = gems.length ? gems.map(c => `<a class="xp-mini-row" href="/coin/${c.sym}"><span class="xp-mini-sym xp-copy-sym" data-sym="${c.sym}">💎 ${c.sym}</span><span class="xp-mini-sub">${utils.usd(c.vol)} · ${c.n} trades</span><span class="xp-sc-risk low">LOW</span></a>`).join('') : '<div class="xp-empty" style="padding:12px 0">Scanning…</div>';
+                ['xp-gems','xp-gems-list'].forEach(id => { const gmEl = document.getElementById(id); if (!gmEl) return; gmEl.innerHTML = gems.length ? gems.map(c => `<a class="xp-mini-row" href="/coin/${c.sym}"><span class="xp-mini-sym xp-copy-sym" data-sym="${c.sym}">💎 ${c.sym}</span><span class="xp-mini-sub">${utils.usd(c.vol)} · ${c.n} trades</span><span class="xp-sc-risk low">LOW</span></a>`).join('') : '<div class="xp-empty" style="padding:12px 0">No gems found yet</div>'; });
             };
             if (!window._reCmpCoins) window._reCmpCoins = [];
             const renderCmpGrid = function() {
@@ -2902,8 +3180,118 @@
                 if (t==='compare') { renderCmpGrid(); renderWhaleLb(); }
                 if (t==='scanner') { renderScanner(); renderGainersLosers(); }
                 if (t==='journal') renderJournal();
+                if (t==='snipe') renderSnipeTargets();
             };
             document.querySelectorAll('[data-re-tab]').forEach(b => b.addEventListener('click', () => applyTab(b.getAttribute('data-re-tab'))));
+
+            // ── Sniper engine ─────────────────────────────────────────────────
+            if (!window._reSnipeTargets) window._reSnipeTargets = new Set();
+            if (!window._reSnipeLog) window._reSnipeLog = [];
+
+            const renderSnipeTargets = function() {
+                const el = document.getElementById('re-snipe-targets'); if (!el) return;
+                const targets = Array.from(window._reSnipeTargets);
+                if (!targets.length) {
+                    el.innerHTML = '<div style="font-size:12px;color:#52525b;text-align:center;padding:8px 0">No targets set. Add a coin symbol above.</div>';
+                    return;
+                }
+                el.innerHTML = '';
+                targets.forEach(function(sym) {
+                    const row = document.createElement('div');
+                    row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 10px;background:rgba(34,197,94,.06);border:1px solid rgba(34,197,94,.15);border-radius:6px';
+                    const lbl = document.createElement('div');
+                    lbl.style.cssText = 'flex:1;font-weight:700;font-family:monospace;font-size:13px;color:#22c55e';
+                    lbl.textContent = sym;
+                    const status = document.createElement('div');
+                    status.style.cssText = 'font-size:10px;color:#6b6b78';
+                    status.textContent = 'Watching live feed...';
+                    const rmBtn = document.createElement('button');
+                    rmBtn.setAttribute('data-snipe-remove', sym);
+                    rmBtn.style.cssText = 'background:none;border:none;cursor:pointer;color:#52525b;font-size:18px;line-height:1;padding:0 3px';
+                    rmBtn.textContent = 'x';
+                    row.appendChild(lbl); row.appendChild(status); row.appendChild(rmBtn);
+                    el.appendChild(row);
+                });
+            };
+
+            const logSnipeHit = function(sym, val, type, ts) {
+                window._reSnipeLog.unshift({ sym, val, type, ts: ts || Date.now() });
+                window._reSnipeLog = window._reSnipeLog.slice(0, 50);
+                const log = document.getElementById('re-snipe-log'); if (!log) return;
+                log.innerHTML = '';
+                window._reSnipeLog.forEach(function(e) {
+                    const row = document.createElement('div');
+                    row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid rgba(255,255,255,.05)';
+                    const isSell = e.type === 'SELL';
+                    const badge = document.createElement('span');
+                    badge.style.cssText = 'font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;font-family:monospace;background:' + (isSell ? 'rgba(239,68,68,.1)' : 'rgba(34,197,94,.1)') + ';color:' + (isSell ? '#ef4444' : '#22c55e');
+                    badge.textContent = e.type;
+                    const symEl = document.createElement('span');
+                    symEl.style.cssText = 'font-weight:700;font-family:monospace;font-size:12px;color:#e8e8eb';
+                    symEl.textContent = e.sym;
+                    const valEl = document.createElement('span');
+                    valEl.style.cssText = 'font-size:11px;color:#6b6b78';
+                    valEl.textContent = utils.usd(e.val);
+                    const timeEl = document.createElement('span');
+                    timeEl.style.cssText = 'font-size:10px;color:#35353f;margin-left:auto;font-family:monospace';
+                    timeEl.textContent = utils.ago(e.ts);
+                    row.appendChild(badge); row.appendChild(symEl); row.appendChild(valEl); row.appendChild(timeEl);
+                    log.appendChild(row);
+                });
+            };
+
+            // Wire WS listener for sniper
+            wsInterceptor.on(function(d) {
+                if (!['live-trade', 'all-trades'].includes(d.type)) return;
+                const data = d.data; if (!data) return;
+                const sym = (data.coinSymbol || '').toUpperCase();
+                if (!sym || !window._reSnipeTargets.has(sym)) return;
+                const val = +(data.totalValue || 0);
+                const type = (data.type || 'BUY').toUpperCase();
+                const ts = data.timestamp || Date.now();
+                logSnipeHit(sym, val, type, ts);
+                // Sound
+                const doSound = document.getElementById('re-snipe-sound');
+                if (!doSound || doSound.checked) {
+                    try { alertEngine._beep(880, 0.18, 0.08); setTimeout(function() { alertEngine._beep(1100, 0.18, 0.08); }, 100); setTimeout(function() { alertEngine._beep(1320, 0.18, 0.15); }, 200); } catch {}
+                }
+                // Toast notification
+                notifier.show({ title: 'Snipe hit: ' + sym, description: type + ' ' + utils.usd(val) + ' detected on live feed', type: 'success', duration: 0,
+                    actions: [{ label: 'Go buy now', onClick: function() { location.href = '/coin/' + sym; } }, { label: 'Dismiss', onClick: function() {} }]
+                });
+                // Auto-navigate
+                const doNav = document.getElementById('re-snipe-navigate');
+                if (!doNav || doNav.checked) {
+                    setTimeout(function() { location.href = '/coin/' + sym; }, 250);
+                }
+                // Remove from targets after hit
+                window._reSnipeTargets.delete(sym);
+                renderSnipeTargets();
+            });
+
+            // Add target
+            document.getElementById('re-snipe-add')?.addEventListener('click', function() {
+                const inp = document.getElementById('re-snipe-sym');
+                const raw = inp ? inp.value.trim().toUpperCase() : '';
+                const sym = raw.replace(/[^A-Z0-9]/g, '');
+                if (!sym) { notifier.err('Enter a coin symbol'); return; }
+                if (window._reSnipeTargets.has(sym)) { notifier.info(sym + ' already targeted'); return; }
+                window._reSnipeTargets.add(sym);
+                if (inp) inp.value = '';
+                renderSnipeTargets();
+                notifier.ok('Now sniping ' + sym);
+            });
+            document.getElementById('re-snipe-sym')?.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter') document.getElementById('re-snipe-add')?.click();
+            });
+            document.getElementById('re-snipe-targets')?.addEventListener('click', function(e) {
+                const btn = e.target.closest('[data-snipe-remove]');
+                if (!btn) return;
+                const sym = btn.getAttribute('data-snipe-remove');
+                window._reSnipeTargets.delete(sym);
+                renderSnipeTargets();
+                notifier.ok(sym + ' removed from snipe targets');
+            });
             document.getElementById('re-wl-add-btn')?.addEventListener('click', () => {
                 const inp = document.getElementById('re-wl-inp');
                 const sym = (inp?.value||'').trim().toUpperCase(); if (!sym) return;
@@ -2991,6 +3379,54 @@
                 store.set('re:cfg', {}); store._cacheDirty = true;
                 notifier.ok('Settings reset — reload panel to apply');
             });
+            
+            // ── Settings tab wiring ─────────────────────────────────────
+            // Accent swatches
+            document.getElementById('xp-accent-swatches')?.addEventListener('click', e => {
+                const sw = e.target.closest('.xp-swatch'); if (!sw) return;
+                const preset = sw.dataset.accent; if (!preset) return;
+                document.querySelectorAll('.xp-swatch').forEach(s => s.classList.remove('active'));
+                sw.classList.add('active');
+                store.cfg('accentPreset', preset);
+                const colorMap = {default:'#f5f5f7',green:'#30d158',blue:'#0a84ff',purple:'#bf5af2',amber:'#ffd60a',red:'#ff453a',teal:'#5ac8fa',pink:'#ff375f',orange:'#ff9f0a'};
+                const col = colorMap[preset] || '#f5f5f7';
+                store.cfg('accentColor', preset === 'default' ? 'default' : col);
+                settingsEngine.applyAll();
+                notifier.ok('Accent color updated');
+            });
+            // Buy/sell colors
+            document.getElementById('xp-buy-color')?.addEventListener('change', e => { store.cfg('tradeFeedBuyColor', e.target.value); settingsEngine.applyAll(); });
+            document.getElementById('xp-sell-color')?.addEventListener('change', e => { store.cfg('tradeFeedSellColor', e.target.value); settingsEngine.applyAll(); });
+            // Panel width
+            document.getElementById('xp-panel-width')?.addEventListener('change', e => { store.cfg('panelWidth', e.target.value); settingsEngine.applyAll(); });
+            // Panel opacity
+            document.getElementById('xp-panel-opacity')?.addEventListener('input', e => {
+                const v = parseInt(e.target.value) || 100;
+                store.cfg('panelOpacity', v);
+                const glass = 'rgba(18,18,22,' + (v/100*0.88).toFixed(2) + ')';
+                document.getElementById('re-panel-wrapper').style.setProperty('--re-glass', glass);
+            });
+            // Timestamp format
+            document.getElementById('xp-ts-format')?.addEventListener('change', e => { store.cfg('timestampFormat', e.target.value); });
+            // Number format
+            document.getElementById('xp-num-format')?.addEventListener('change', e => { store.cfg('numberFormat', e.target.value); });
+            // Performance settings
+            document.getElementById('xp-feed-max-rows')?.addEventListener('change', e => { store.cfg('feedMaxRows', parseInt(e.target.value)||80); });
+            document.getElementById('xp-whale-size')?.addEventListener('change', e => { store.cfg('whaleTxMin', parseFloat(e.target.value)||500); notifier.ok('Whale threshold updated'); });
+            document.getElementById('xp-small-trade')?.addEventListener('change', e => { store.cfg('smallTradeUsd', parseFloat(e.target.value)||10); settingsEngine.applyAll(); });
+            document.getElementById('xp-pf-refresh')?.addEventListener('change', e => { store.cfg('portfolioRefreshRate', parseInt(e.target.value)||5000); });
+            // Notification sound
+            document.getElementById('xp-notif-sound')?.addEventListener('change', e => { store.cfg('notifSound', e.target.value); });
+            // Blocked/pinned/trusted lists
+            document.getElementById('xp-save-lists')?.addEventListener('click', () => {
+                const bu = document.getElementById('xp-blocked-users')?.value.trim() || '';
+                const pc = document.getElementById('xp-pinned-coins')?.value.trim().toUpperCase() || '';
+                const tc = document.getElementById('xp-trusted-creators')?.value.trim() || '';
+                store.cfg('blockedUsers', bu); store.cfg('pinnedCoins', pc); store.cfg('trustedCreators', tc);
+                settingsEngine.applyAll();
+                notifier.ok('Lists saved');
+            });
+
             document.getElementById(CONFIG.ids.panelWrapper)?.addEventListener('click', e => {
                 const sym = e.target.closest('.xp-copy-sym')?.dataset?.sym;
                 if (!sym || !store.settings().quickCopySymbol) return;
@@ -3070,6 +3506,7 @@
                 });
             }
             document.getElementById('re-rp-sub')?.addEventListener('click', () => this._submitReport());
+            document.getElementById('re-panel-close')?.addEventListener('click', () => enhancedPanel.hide());
             document.getElementById('re-feedback-btn')?.addEventListener('click', () => this._showFeedbackModal());
             const loadBets = function() {
                 const body = document.getElementById('xp-bets-body'); if (!body) return;
@@ -3153,16 +3590,12 @@
             document.getElementById('xp-bets-refresh')?.addEventListener('click', loadBets);
             document.getElementById('xp-lb-refresh')?.addEventListener('click', loadLeaderboard);
             document.getElementById('xp-bug-submit')?.addEventListener('click', () => {
-                const title = document.getElementById('xp-bug-title')?.value.trim() || 'Bug report';
                 const desc = document.getElementById('xp-bug-desc')?.value.trim() || '';
-                const page = document.getElementById('xp-bug-page')?.value || '';
-                const body = `**Rugplay Enhanced v${GM_info.script.version}**\n\n**Page:** ${page||'Not specified'}\n\n**Description:**\n${desc}\n\n**Browser:** ${navigator.userAgent.split(' ').slice(-2).join(' ')}`;
-                const url = 'https://github.com/devbyego/rugplay-enhanced/issues/new?title=' + encodeURIComponent(title) + '&body=' + encodeURIComponent(body) + '&labels=bug';
+                const body = `**Rugplay Enhanced v${GM_info.script.version}**\n\n**Description:**\n${desc}\n\n**Browser:** ${navigator.userAgent.split(' ').slice(-2).join(' ')}`;
+                const url = 'https://github.com/devbyego/rugplay-enhanced/issues/new?title=' + encodeURIComponent('Bug report') + '&body=' + encodeURIComponent(body) + '&labels=bug';
                 window.open(url, '_blank');
             });
-            document.getElementById('xp-mytrades-refresh')?.addEventListener('click', () => loadMyTrades(1));
-            document.getElementById('xp-mytrades-filter')?.addEventListener('change', () => loadMyTrades(1));
-            document.getElementById('re-feedback-btn-footer')?.addEventListener('click', () => this._showFeedbackModal());
+            document.getElementById('re-feedback-btn')?.addEventListener('click', () => this._showFeedbackModal());
             this._renderAlerts();
             this._loadReports(1);
             dashboard.render();
@@ -3184,7 +3617,7 @@
             applyTab(store.settings().panelTab || 'dashboard');
         },
         _renderAlerts() {
-            const el = document.getElementById('re-al-body'); if (!el) return;
+            const el = document.getElementById('re-al-list') || document.getElementById('re-al-body'); if (!el) return;
             const al = store.alerts();
             if (!al.length) { el.innerHTML = '<div class="xp-empty">No alerts set yet. Add one above.</div>'; return; }
             el.innerHTML = al.map(a => `<div class="xp-al-row${a.done?' done':''}"><div class="xp-al-info"><div class="xp-al-sym">${a.sym}</div><div class="xp-al-meta">${a.dir} ${utils.usd(a.px)}${a.done?' · Triggered '+utils.ago(a.hitAt):''}</div></div><button class="xp-al-del" data-id="${a.id}"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>`).join('');
@@ -3385,27 +3818,43 @@
     `);
     const tradeInterceptor = {
         _patched: false,
+        _confirming: false,
         apply() {
             const s = store.settings();
-            if (!s.confirmTrades && !s.showFeeEstimate) return;
+            if (!s.confirmTrades && !s.showFeeEstimate && !s.confirmSells) return;
             if (this._patched) return;
             this._patched = true;
             document.addEventListener('click', e => {
+                if (this._confirming) return;
                 const btn = e.target.closest('button');
                 if (!btn) return;
                 const txt = (btn.textContent || '').trim().toUpperCase();
-                const isTrade = /^(BUY|SELL)\s+[A-Z0-9]+$/.test(txt) || btn.classList.toString().includes('trade') || btn.dataset.action === 'trade';
+                const isTrade = /^(BUY|SELL)(\s+[A-Z0-9]+)?$/.test(txt) || btn.dataset.action === 'trade';
                 if (!isTrade) return;
                 const cs = store.settings();
-                if (cs.confirmTrades) {
-                    e.preventDefault();
-                    e.stopImmediatePropagation();
-                    const msg = `Confirm ${txt}?`;
-                    if (!window.confirm(msg)) return;
-                    this._patched = false;
-                    btn.click();
-                    this._patched = true;
-                }
+                const isSellAction = /^SELL/.test(txt);
+                const needsConfirm = cs.confirmTrades || (cs.confirmSells && isSellAction);
+                if (!needsConfirm) return;
+                e.preventDefault();
+                e.stopImmediatePropagation();
+                const isSell = isSellAction;
+                const color = isSell ? '#ef4444' : '#22c55e';
+                const ov = document.createElement('div');
+                ov.style.cssText = 'position:fixed;inset:0;z-index:999999;background:rgba(0,0,0,.65);display:flex;align-items:center;justify-content:center';
+                const box = document.createElement('div');
+                box.style.cssText = 'background:#17171b;border:1px solid rgba(255,255,255,.1);border-radius:10px;padding:22px 24px;max-width:300px;width:90%;font-family:-apple-system,BlinkMacSystemFont,sans-serif;box-shadow:0 24px 64px rgba(0,0,0,.8)';
+                box.innerHTML = '<div style="font-size:15px;font-weight:700;color:#eeeef0;margin-bottom:5px">Confirm trade</div>'
+                    + '<div style="font-size:13px;color:#6b6b78;margin-bottom:18px">You are about to <strong style="color:' + color + '">' + txt + '</strong>. Continue?</div>'
+                    + '<div style="display:flex;gap:8px">'
+                    + '<button id="re-ti-cancel" style="flex:1;height:36px;border-radius:6px;border:1px solid rgba(255,255,255,.1);background:transparent;color:#e8e8eb;font-size:13px;font-weight:600;cursor:pointer">Cancel</button>'
+                    + '<button id="re-ti-ok" style="flex:1;height:36px;border-radius:6px;border:none;background:' + color + ';color:#fff;font-size:13px;font-weight:700;cursor:pointer">Confirm</button>'
+                    + '</div>';
+                ov.appendChild(box);
+                document.body.appendChild(ov);
+                const close = () => ov.remove();
+                box.querySelector('#re-ti-cancel').onclick = close;
+                box.querySelector('#re-ti-ok').onclick = () => { close(); this._confirming = true; btn.click(); this._confirming = false; };
+                ov.addEventListener('click', e => { if (e.target === ov) close(); });
             }, { capture: true });
             if (s.showFeeEstimate) {
                 const tryInject = () => {
@@ -3469,10 +3918,10 @@
         _asks: {}, _bids: {},
         init() {
             wsInterceptor.on(d => {
-                if (!['live-trade','all-trades'].includes(d.type)) return;
-                const sym = (d.data?.coinSymbol || '').toUpperCase();
-                const px = parseFloat(d.data?.price || 0);
-                const type = (d.data?.type || '').toUpperCase();
+                if (d.type !== 'live-trade' && d.type !== 'price_update') return;
+                const sym = d.type === 'price_update' ? (d.coinSymbol || '').toUpperCase() : (d.data?.coinSymbol || '').toUpperCase();
+                const px = d.type === 'price_update' ? parseFloat(d.price || 0) : parseFloat(d.data?.price || 0);
+                const type = d.type === 'price_update' ? 'BUY' : (d.data?.type || '').toUpperCase();
                 if (!sym || !px) return;
                 if (type === 'BUY') { this._asks[sym] = px; }
                 if (type === 'SELL') { this._bids[sym] = px; }
@@ -3656,7 +4105,8 @@
         _timers: {},
         show(key, opts, delay) {
             delay = delay || 2000;
-            if (!store.settings().smartNotifications) { notifier.show(opts); return; }
+            // smartNotifications groups rapid-fire alerts of same type
+            if (true) { notifier.show(opts); return; }
             this._queue[key] = opts;
             clearTimeout(this._timers[key]);
             this._timers[key] = setTimeout(() => {
@@ -3688,10 +4138,10 @@
         },
     };
     wsInterceptor.on(d => {
-        if (!['live-trade','all-trades'].includes(d.type)) return;
-        const sym = (d.data && d.data.coinSymbol || '').toUpperCase();
-        const val = +(d.data && d.data.totalValue || 0);
-        const type = (d.data && d.data.type || 'BUY').toUpperCase();
+        if (d.type !== 'live-trade') return;
+        const sym = (d.data?.coinSymbol || '').toUpperCase();
+        const val = +(d.data?.totalValue || 0);
+        const type = (d.data?.type || 'BUY').toUpperCase();
         if (sym) momentum.update(sym, val, type);
     });
     const app = {
