@@ -9,6 +9,7 @@
 [![Version](https://img.shields.io/badge/version-1.4.0-111?style=flat-square&color=ffffff&labelColor=111)](https://github.com/devbyego/rugplay-enhanced/releases/latest)
 [![License](https://img.shields.io/badge/license-MIT-111?style=flat-square&color=ffffff&labelColor=111)](./LICENSE)
 [![Tampermonkey](https://img.shields.io/badge/Tampermonkey-required-111?style=flat-square&color=ffffff&labelColor=111)](https://www.tampermonkey.net/)
+[![GreasyFork](https://img.shields.io/badge/GreasyFork-install-111?style=flat-square&color=ffffff&labelColor=111)](https://greasyfork.org/en/scripts/570332-rugplay-enhanced)
 
 Live feed · Price alerts · Watchlist · Coin Sniper · Risk scoring · Bot detection · My Trades · Predictions · Leaderboard · Session journal · 100+ mods
 
@@ -19,6 +20,12 @@ Zero tracking · Zero third-party servers · All mods off by default · Free for
 ---
 
 ## Install
+
+**Option 1 — GreasyFork (easiest)**
+
+Install directly from [greasyfork.org/en/scripts/570332-rugplay-enhanced](https://greasyfork.org/en/scripts/570332-rugplay-enhanced) — one click, auto-updates.
+
+**Option 2 — GitHub Releases**
 
 1. Install [Tampermonkey](https://www.tampermonkey.net/) for Chrome, Firefox, or Edge
 2. Go to [Releases](https://github.com/devbyego/rugplay-enhanced/releases/latest)
